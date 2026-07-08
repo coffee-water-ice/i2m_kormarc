@@ -1,0 +1,22 @@
+fastapi==0.136.1
+uvicorn==0.46.0
+pydantic==2.13.3
+pydantic-settings==2.7.1
+requests==2.33.1
+beautifulsoup4==4.14.3
+pymarc==5.1.0
+gspread==6.2.1
+oauth2client==4.1.3
+pandas==3.0.2
+openpyxl==3.1.5
+openai==2.33.0
+python-dotenv==1.2.2
+google-auth
+streamlit>=1.32
+
+# --- 아래는 041/245/653 스텁을 실제 로직으로 이식할 때 추가로 필요한 의존성 ---
+# hanja           # 245: 한자 표기 변환 (원저자 한자명)
+# pykakasi        # 245: 일본어 로마자 변환
+# jaconv          # 245: 일본어 문자 변환
+# httpx           # 653: 비동기 HTTP 클라이언트 (원본이 async 기반)
+# tenacity        # 653: 재시도 데코레이터
