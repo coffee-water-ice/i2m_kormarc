@@ -14,9 +14,12 @@ python-dotenv==1.2.2
 google-auth
 streamlit>=1.32
 
-# --- 아래는 041/245/653 스텁을 실제 로직으로 이식할 때 추가로 필요한 의존성 ---
-# hanja           # 245: 한자 표기 변환 (원저자 한자명)
-# pykakasi        # 245: 일본어 로마자 변환
-# jaconv          # 245: 일본어 문자 변환
+# --- 245 계열(700/900) 한자·가나 표기 변환 — core/text_utils.py에서 선택적 import ---
+# 셋 다 없어도 모듈은 로드되고(try/except), 한자/가나 관련 변환만 건너뛴다.
+hanja           # 한자 → 한국 음독 변환 (kanji_to_korean_reading)
+pykakasi        # 일본어 한자/가나 → 히라가나 변환
+jaconv          # 히라가나 ↔ 가타카나 변환
+
+# --- 아래는 041/653 스텁을 실제 로직으로 이식할 때 추가로 필요한 의존성 ---
 # httpx           # 653: 비동기 HTTP 클라이언트 (원본이 async 기반)
 # tenacity        # 653: 재시도 데코레이터

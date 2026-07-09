@@ -1,10 +1,11 @@
 """
 pages/1_ISBN_변환.py
-260(발행사항)/300(형태사항) 변환 페이지 — streamlit_app.py(Home)에서 분리.
+245/246/500/700/710/900/940(245 계열) + 260(발행사항)/300(형태사항) 변환 페이지 —
+streamlit_app.py(Home)에서 분리.
 
 원래 streamlit_app.py 전체였던 내용을 그대로 옮겼다. Streamlit 멀티페이지 구조에서는
 루트의 streamlit_app.py가 진입점 겸 Home이 되고, pages/ 안의 파일들이 사이드바에
-자동으로 추가 페이지로 노출된다. 041/245/653을 하나씩 이식할 때마다
+자동으로 추가 페이지로 노출된다. 041/653을 하나씩 이식할 때마다
 pages/2_..., pages/3_... 형태로 검증용 페이지를 추가해 나간다.
 """
 
@@ -19,7 +20,7 @@ from api_client import convert_isbn, convert_batch, query_kpipa
 
 
 st.set_page_config(page_title="ISBN 변환 | I2M KORMARC", page_icon="📚", layout="wide")
-st.title("ISBN → KORMARC 변환 (260/300)")
+st.title("ISBN → KORMARC 변환 (245/246/500/700/710/900/940/260/300)")
 st.caption("FastAPI 백엔드(`/api/convert`)를 호출해 MARC 결과를 보여줍니다.")
 
 # NOTE: build_pub_location_bundle()의 실제 source 값 기준 (2026-07-08 정리 후).
@@ -55,6 +56,9 @@ def _results_to_dataframe(results: list[dict]) -> pd.DataFrame:
             "발행처":     meta.get("publisher_raw", ""),
             "발행지":     meta.get("place_display", ""),
             "발행년도":   meta.get("pubyear", ""),
+            "245필드":    _extract_field(mrk, "245"),
+            "246필드":    _extract_field(mrk, "246"),
+            "700필드":    _extract_field(mrk, "700"),
             "260필드":    _extract_field(mrk, "260"),
             "300필드":    _extract_field(mrk, "300"),
             "발행지 출처": _SOURCE_LABEL.get(meta.get("bundle_source", ""), meta.get("bundle_source", "")),
@@ -96,6 +100,12 @@ with tab_single:
                 source = meta.get("bundle_source", "")
                 label = _SOURCE_LABEL.get(source, source or "알 수 없음")
                 st.caption(f"발행지 출처: **{label}**")
+
+                if meta.get("translation_book"):
+                    st.caption(
+                        f"번역서 판정: **원서명** `{meta.get('orig_title') or '(미확인)'}` · "
+                        f"**원저자명** `{meta.get('orig_author_en') or '(미확인)'}`"
+                    )
 
                 # ── 300 $b 삽화 감지 상세 ──────────────────────
                 illus_diag = meta.get("illus_diagnosis", {})
