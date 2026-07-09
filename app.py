@@ -2,13 +2,15 @@
 app.py
 FastAPI 애플리케이션 진입점 — i2m_kormarc 통합 골격.
 
-이번 골격(skeleton) 단계 범위(통합_계획.md 참고):
+현재 상태:
   - 260(발행사항)/300(형태사항)은 260+300 폴더의 로직을 그대로 이관해 실제로 동작한다.
-  - 041/245/500/700/710/653은 core/fields/*.py에 스텁만 있고 아직 호출하지 않는다.
+  - 245/246/500/700/710/900은 245 폴더의 로직을 이관해 실제로 동작한다
+    (core/fields/marc_245.py, core/fields/marc_500_700_710.py).
+  - 041(언어코드/546)·653(자유주제어)은 core/fields/*.py에 스텁만 있고 아직 호출하지 않는다.
     아래 _run_conversion() 안에 TODO 주석으로 연결 지점을 표시해 두었다.
 
 엔드포인트:
-  POST /api/convert        — 단일 ISBN → MARC 변환 (260/300만 실제 생성)
+  POST /api/convert        — 단일 ISBN → MARC 변환
   POST /api/convert/batch  — 다중 ISBN 일괄 변환
   GET  /api/kpipa/{isbn}   — KPIPA 공식 API 직접 조회
   POST /api/feedback       — 사서 수정값 DB 저장
@@ -23,25 +25,26 @@ import os
 from contextlib import asynccontextmanager
 from typing import Optional
 
+import openai
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 # 내부 모듈 — 새 골격 경로
 from core.config import Settings, get_settings, load_streamlit_secrets_into_env
-from core.marc_builder import MarcBuilder
+from core.debug_log import clear_debug_lines, get_debug_lines
+from core.marc_builder import MarcBuilder, kormarc_tag_to_mrk, mrk_str_to_field
 from core.fields.marc_260 import build_260_field
 from core.fields.marc_300 import build_300_field
+from core.fields.marc_245 import build_245_family
+from core.fields.marc_500_700_710 import build_500_700_710_900
 from api.aladin_client import get_aladin_item_by_isbn
 from api.kpipa_client import get_kpipa_book_detail
 from api.publisher_db import build_pub_location_bundle
 from database.feedback_logger import init_db, save_feedback_record
 
 # TODO(041 이식 시 주석 해제): from core.fields.marc_041 import build_041_546
-# TODO(245 이식 시 주석 해제): from core.fields.marc_245 import build_245_family
-# TODO(700/710 이식 시 주석 해제): from core.fields.marc_500_700_710 import build_500_700_710
 # TODO(653 이식 시 주석 해제): from core.fields.marc_653 import build_653_field
-# TODO(041/245/653 이식 시 주석 해제): from api.openai_client import build_openai_client
 
 logger = logging.getLogger("i2m_kormarc")
 
@@ -154,16 +157,24 @@ def _settings_to_secrets(settings: Settings) -> dict:
     }
 
 
+def _build_openai_client(settings: Settings) -> openai.OpenAI | None:
+    """
+    245(원제/원저자 웹 검색)가 요구하는 넉넉한 timeout(60초, 원본 245/app.py 기준)으로
+    클라이언트를 만든다. API 키가 없으면 None — 각 빌더가 None을 받으면 GPT 단계를
+    건너뛰고 규칙 기반 폴백만 쓰도록 이미 설계되어 있다(041 방식 주입, 원칙 #3).
+    """
+    if not settings.openai_api_key:
+        return None
+    return openai.OpenAI(api_key=settings.openai_api_key, timeout=60.0)
+
+
 def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
     """
-    단일 ISBN 변환 핵심 로직 — 골격 단계에서는 260/300만 실제로 생성한다.
+    단일 ISBN 변환 핵심 로직. 260/300/245/246/500/700/710/900을 생성한다.
 
-    041/245/500/700/710/653을 이식할 때는 아래 TODO 지점에 각 필드 빌더 호출을
-    추가하고, all_tags에 반환된 태그 문자열을 append하면 된다. 041/653은 원본이
-    OpenAI를 직접 호출하므로 build_openai_client(get_settings())로 만든 클라이언트를
-    함께 넘긴다. 653은 async 함수이므로 이 함수 자체를 async def로 바꾸고
-    나머지 동기 호출부는 asyncio.to_thread(...)로 감싸야 한다
-    (core/fields/marc_653.py 상단 docstring 참고).
+    041/653을 이식할 때는 아래 TODO 지점에 필드 빌더 호출을 추가하면 된다. 653은
+    async 함수이므로 이 함수 자체를 async def로 바꾸고 나머지 동기 호출부는
+    asyncio.to_thread(...)로 감싸야 한다(core/fields/marc_653.py 상단 docstring 참고).
     """
     try:
         isbn = req.isbn.strip().replace("-", "")
@@ -178,14 +189,49 @@ def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
         pubdate = (item or {}).get("pubDate", "") or ""
         pubyear = pubdate[:4] if len(pubdate) >= 4 else ""
 
+        openai_client = _build_openai_client(get_settings())
+        builder = MarcBuilder()
         all_tags: list[str] = []
 
-        # TODO(041 이식 시): openai_client = build_openai_client(get_settings())
-        # TODO(041 이식 시): tag_041, tag_546 = build_041_546(item, detail={}, openai_client=openai_client)
-        # TODO(041 이식 시): all_tags += [t for t in (tag_041, tag_546) if t]
+        def _add(tag_line: str | None) -> None:
+            """
+            245 계열("700 1_ $a ...")과 260/300 계열("=260  ...")이 서로 다른 태그
+            표기 관용을 쓰므로, mrk_text에는 항상 표준 "=TAG  INDIND..." 형식으로
+            정규화해서 담는다(kormarc_tag_to_mrk가 이미 "=" 형식인 태그는 그대로 통과).
+            """
+            if not tag_line:
+                return
+            mrk_line = tag_line if tag_line.startswith("=") else (kormarc_tag_to_mrk(tag_line) or tag_line)
+            all_tags.append(mrk_line)
+            field = mrk_str_to_field(mrk_line)
+            if field:
+                builder.rec.add_field(field)
 
-        # TODO(245 이식 시): field_245_bundle = build_245_family(item, secrets=secrets)
-        # TODO(245 이식 시): all_tags += [v for v in field_245_bundle.values() if v]
+        # TODO(041 이식 시): tag_041, tag_546 = build_041_546(item, detail={}, openai_client=openai_client)
+        # TODO(041 이식 시): _add(tag_041); _add(tag_546)
+
+        # ── 245/246/900 계열 ────────────────────────────────
+        f245_ctx = build_245_family(
+            item, isbn,
+            aladin_ttb_key=secrets.get("ALADIN_TTB_KEY", ""),
+            nlk_api_key=secrets.get("NLK_CERT_KEY", ""),
+            openai_client=openai_client,
+        )
+        _add(f245_ctx["field_245"])
+
+        f5_result = build_500_700_710_900(f245_ctx, openai_client=openai_client)
+        if f5_result["field_246"]:
+            _add(f5_result["field_246"])
+        for t in f5_result["fields_500"]:
+            _add(t)
+        for t in f5_result["fields_700"]:
+            _add(t)
+        for t in f5_result["fields_710"]:
+            _add(t)
+        for t in f5_result["fields_900"]:
+            _add(t)
+        if f245_ctx["field_940"]:
+            _add(f245_ctx["field_940"])
 
         # ── 260 ──────────────────────────────────────────────
         bundle = build_pub_location_bundle(isbn, publisher_raw, secrets)
@@ -197,23 +243,17 @@ def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
             publisher_name2=secondary_pub,
         )
         all_tags.append(tag_260)
-
-        # TODO(500/700/710 이식 시): field_770_bundle = build_500_700_710(item, secrets=secrets)
-        # TODO(500/700/710 이식 시): all_tags += [...]
+        if f_260:
+            builder.rec.add_field(f_260)
 
         # ── 300 ──────────────────────────────────────────────
         tag_300, f_300, illus_diag = build_300_field(item, isbn=isbn, secrets=secrets)
         all_tags.append(tag_300)
-
-        # TODO(653 이식 시): tag_653, err_653 = await build_653_field(item, secrets=secrets, openai_client=openai_client)
-        # TODO(653 이식 시): all_tags.append(tag_653) if not err_653 else None
-
-        # ── Record 조립 ────────────────────────────────────
-        builder = MarcBuilder()
-        if f_260:
-            builder.rec.add_field(f_260)
         if f_300:
             builder.rec.add_field(f_300)
+
+        # TODO(653 이식 시): tag_653, err_653 = await build_653_field(item, secrets=secrets, openai_client=openai_client)
+        # TODO(653 이식 시): _add(tag_653) if not err_653 else None
 
         mrk_text = "\n".join(filter(None, all_tags))
         marc_bytes = builder.rec.as_marc()
@@ -232,8 +272,12 @@ def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
             "illus_diagnosis": illus_diag.get("illus_diagnosis", {}),
             "bundle_source": bundle.get("source"),
             "secondary_publisher": secondary_pub,
-            "debug_lines": bundle.get("debug", []),
+            "orig_title": f245_ctx.get("orig_title", ""),
+            "orig_author_en": f245_ctx.get("orig_author_en", ""),
+            "translation_book": f245_ctx.get("translation_book", False),
+            "debug_lines": bundle.get("debug", []) + get_debug_lines(),
         }
+        clear_debug_lines()
 
         return ConvertResult(
             isbn=isbn,

@@ -43,6 +43,25 @@ class MarcBuilder:
         return "\n".join(self.lines)
 
 
+def kormarc_tag_to_mrk(raw: str) -> str | None:
+    """
+    245 계열(245/app.py) 스타일 태그 문자열("700 1_ $a 이름")을
+    260+300 계열이 쓰는 표준 MRK 형식("=700  1\\$a 이름")으로 변환한다.
+
+    245 원본은 태그·인디케이터·서브필드를 "245 00 $a ..." 형태(공백 구분, "_"=공백
+    인디케이터)로 만들었고, 260+300 원본은 "=245  00$a ..." 형태(등호+두 칸+인디케이터
+    붙여쓰기)를 썼다 — 두 관용을 하나의 MarcBuilder/mrk_str_to_field 파이프라인에
+    합치기 위한 어댑터.
+    """
+    m = re.match(r"^(\d{3})\s+([0-9_ ]{2})\s+(.*)$", (raw or "").strip())
+    if not m:
+        return None
+    tag, ind, body = m.groups()
+    ind1 = "\\" if ind[0] in ("_", " ") else ind[0]
+    ind2 = "\\" if ind[1] in ("_", " ") else ind[1]
+    return f"={tag}  {ind1}{ind2}{body}"
+
+
 def mrk_str_to_field(line) -> Field | None:
     """
     MRK 형식 문자열 한 줄을 pymarc.Field 객체로 변환한다.
