@@ -343,7 +343,7 @@ def _parse_aladin_physical_info(
 
     if c_part:
         if mrk_parts:
-            mrk_parts.append(f"; $c{c_part}")
+            mrk_parts.append(f";$c{c_part}")
         else:
             mrk_parts.append(f"$c{c_part}")
 
