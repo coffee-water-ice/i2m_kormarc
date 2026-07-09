@@ -16,7 +16,7 @@ import re
 import pandas as pd
 import streamlit as st
 
-from api_client import convert_isbn, convert_batch, query_kpipa
+from api_client import convert_isbn, convert_batch
 
 
 st.set_page_config(page_title="ISBN 변환 | I2M KORMARC", page_icon="📚", layout="wide")
@@ -43,6 +43,18 @@ def _extract_field(mrk_text: str, tag: str) -> str:
         if line.startswith(f"={tag}"):
             return line
     return ""
+
+
+def _sort_mrk_lines(mrk_text: str) -> str:
+    """MRK 텍스트를 태그(3자리 숫자) 오름차순으로 정렬. 같은 태그가 여러 줄이면
+    원래 순서를 유지한다(sorted()는 stable sort). 태그를 못 읽는 줄은 맨 뒤로 보낸다."""
+    lines = [line for line in (mrk_text or "").splitlines() if line.strip()]
+
+    def _tag_key(line: str) -> int:
+        m = re.match(r"^=(\d{3})", line)
+        return int(m.group(1)) if m else 999
+
+    return "\n".join(sorted(lines, key=_tag_key))
 
 
 def _results_to_dataframe(results: list[dict]) -> pd.DataFrame:
@@ -86,73 +98,45 @@ with tab_single:
             st.warning("ISBN을 입력해 주세요.")
         else:
             with st.spinner("변환 중..."):
-                result = convert_isbn(isbn)
+                st.session_state["single_result"] = convert_isbn(isbn)
 
-            if result.get("error"):
-                st.error(result["error"])
-            else:
-                st.success("변환 완료")
-                st.subheader("MRK 텍스트")
-                st.code(result.get("mrk_text", ""), language="text")
+    # 결과를 session_state에 보관 — 아래 직접 수정 textarea를 편집할 때마다
+    # Streamlit이 스크립트를 다시 실행하는데, 그때도 버튼을 다시 누르지 않고
+    # 마지막 변환 결과가 계속 표시되도록 하기 위함.
+    result = st.session_state.get("single_result")
+    if result is not None:
+        if result.get("error"):
+            st.error(result["error"])
+        else:
+            st.success("변환 완료")
+            meta = result.get("meta", {})
 
-                meta = result.get("meta", {})
+            # ── 직접 수정 파트 (별도 이름 없이, 태그 오름차순 정렬 상태로 표시) ──
+            sorted_mrk = _sort_mrk_lines(result.get("mrk_text", ""))
+            edited_mrk = st.text_area(
+                "MRK 직접 수정",
+                value=sorted_mrk,
+                height=280,
+                key=f"mrk_edit_{result.get('isbn', '')}",
+                label_visibility="collapsed",
+            )
 
-                source = meta.get("bundle_source", "")
-                label = _SOURCE_LABEL.get(source, source or "알 수 없음")
-                st.caption(f"발행지 출처: **{label}**")
+            # ── MRK 텍스트 — 위에서 수정한 내용을 그대로 반영 ──────
+            st.subheader("MRK 텍스트")
+            st.code(edited_mrk, language="text")
 
-                if meta.get("translation_book"):
-                    st.caption(
-                        f"번역서 판정: **원서명** `{meta.get('orig_title') or '(미확인)'}` · "
-                        f"**원저자명** `{meta.get('orig_author_en') or '(미확인)'}`"
-                    )
+            source = meta.get("bundle_source", "")
+            label = _SOURCE_LABEL.get(source, source or "알 수 없음")
+            st.caption(f"발행지 출처: **{label}**")
 
-                # ── 300 $b 삽화 감지 상세 ──────────────────────
-                illus_diag = meta.get("illus_diagnosis", {})
-                with st.expander("300 $b 삽화 감지 상세", expanded=True):
-                    sources = illus_diag.get("sources", {})
-                    naver_desc = sources.get("네이버 책소개", "")
-                    st.markdown("**네이버 책소개**")
-                    st.text_area(
-                        "네이버 책소개",
-                        value=naver_desc or "(없음)",
-                        height=200,
-                        disabled=True,
-                        key="illus_src_naver",
-                        label_visibility="collapsed",
-                    )
+            if meta.get("translation_book"):
+                st.caption(
+                    f"번역서 판정: **원서명** `{meta.get('orig_title') or '(미확인)'}` · "
+                    f"**원저자명** `{meta.get('orig_author_en') or '(미확인)'}`"
+                )
 
-                    # ── 알라딘 카테고리 ──────────────────────────
-                    aladin_cats = illus_diag.get("알라딘 카테고리", [])
-                    st.markdown("**알라딘 카테고리**")
-                    if aladin_cats:
-                        for cat_path in aladin_cats:
-                            st.markdown(f"- {cat_path}")
-                    else:
-                        st.caption("(카테고리 정보 없음)")
-
-                    st.markdown("**AI 판정 결과**")
-                    detected = illus_diag.get("detected", [])
-                    if detected:
-                        df_illus = pd.DataFrame(detected)[["label", "keyword", "source"]]
-                        df_illus.columns = ["KORMARC 레이블", "판정 항목", "근거"]
-                        st.dataframe(df_illus, hide_index=True, use_container_width=True)
-                    else:
-                        st.info("AI 판정 결과 없음 (삽화 없음 또는 키 미설정)")
-
-                st.subheader("메타 정보")
+            with st.expander("메타 정보", expanded=False):
                 st.json(meta)
-
-            st.divider()
-            st.subheader("KPIPA API 조회 결과")
-            with st.spinner("KPIPA 조회 중..."):
-                kpipa = query_kpipa(isbn)
-
-            if kpipa.get("error"):
-                st.error(kpipa["error"])
-            else:
-                st.success("KPIPA 조회 완료")
-                st.json(kpipa.get("data", {}))
 
 
 # ══════════════════════════════════════════════════════════════
