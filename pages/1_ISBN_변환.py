@@ -20,7 +20,7 @@ from api_client import convert_isbn, convert_batch
 
 
 st.set_page_config(page_title="ISBN 변환 | I2M KORMARC", page_icon="📚", layout="wide")
-st.title("ISBN → KORMARC 변환 (245/246/500/700/710/900/940/260/300)")
+st.title("KORMARC 자동 생성 시스템(I2M)")
 st.caption("FastAPI 백엔드(`/api/convert`)를 호출해 MARC 결과를 보여줍니다.")
 
 # NOTE: build_pub_location_bundle()의 실제 source 값 기준 (2026-07-08 정리 후).
