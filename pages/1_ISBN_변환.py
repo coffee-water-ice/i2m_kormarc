@@ -99,6 +99,12 @@ with tab_single:
         else:
             with st.spinner("변환 중..."):
                 st.session_state["single_result"] = convert_isbn(isbn)
+            # 직접 수정 textarea의 key에 쓰는 일련번호 — ISBN만으로 key를 잡으면
+            # 같은 ISBN을 다시 변환했을 때 Streamlit이 새 value를 무시하고 이전에
+            # 사용자가 편집한(혹은 이전 결과로 채워졌던) 위젯 상태를 그대로 재사용해
+            # 새로 변환한 내용이 화면에 반영되지 않는 문제가 있었다. 매 변환마다
+            # 값을 늘려 항상 새 위젯 인스턴스로 취급되게 한다.
+            st.session_state["single_result_seq"] = st.session_state.get("single_result_seq", 0) + 1
 
     # 결과를 session_state에 보관 — 아래 직접 수정 textarea를 편집할 때마다
     # Streamlit이 스크립트를 다시 실행하는데, 그때도 버튼을 다시 누르지 않고
@@ -113,11 +119,12 @@ with tab_single:
 
             # ── 직접 수정 파트 (별도 이름 없이, 태그 오름차순 정렬 상태로 표시) ──
             sorted_mrk = _sort_mrk_lines(result.get("mrk_text", ""))
+            seq = st.session_state.get("single_result_seq", 0)
             edited_mrk = st.text_area(
                 "MRK 직접 수정",
                 value=sorted_mrk,
                 height=280,
-                key=f"mrk_edit_{result.get('isbn', '')}",
+                key=f"mrk_edit_{result.get('isbn', '')}_{seq}",
                 label_visibility="collapsed",
             )
 
