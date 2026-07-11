@@ -45,11 +45,17 @@ def check_backend_health() -> dict:
         {"ok": bool, "detail": str}
     """
     try:
-        resp = requests.get(_url("/health"), timeout=5)
+        # Render 무료/스타터 플랜은 일정 시간 요청이 없으면 슬립 상태로 들어가고,
+        # 다음 요청에서 깨어나는 데 수십 초가 걸릴 수 있다(콜드 스타트). 5초처럼
+        # 짧은 timeout을 쓰면 이 콜드 스타트 중에는 매번 타임아웃으로 실패한 것처럼
+        # 보이므로, 다른 API 호출과 동일하게 _default_timeout()을 쓴다.
+        resp = requests.get(_url("/health"), timeout=_default_timeout())
         resp.raise_for_status()
         return {"ok": True, "detail": resp.json().get("status", "ok")}
     except requests.exceptions.ConnectionError:
         return {"ok": False, "detail": "백엔드 서버에 연결할 수 없습니다"}
+    except requests.exceptions.Timeout:
+        return {"ok": False, "detail": "백엔드 응답 시간 초과 (Render 콜드 스타트 중일 수 있음 — 잠시 후 새로고침해 보세요)"}
     except Exception as e:
         return {"ok": False, "detail": str(e)}
 
