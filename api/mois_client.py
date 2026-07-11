@@ -10,7 +10,16 @@ api/mois_client.py
 
 from __future__ import annotations
 
+import re
+
 import requests
+
+_SERVICEKEY_RE = re.compile(r"(serviceKey=)[^&\s]+", re.IGNORECASE)
+
+
+def _redact(msg: str) -> str:
+    """실패한 요청 URL이 그대로 담기는 에러 메시지(str(e))에서 DATA_GO_KR 키를 가린다."""
+    return _SERVICEKEY_RE.sub(r"\1***", msg)
 
 
 def get_mois_publisher_address(publisher_name: str, api_key: str) -> tuple[str | None, list[str]]:
@@ -67,5 +76,5 @@ def get_mois_publisher_address(publisher_name: str, api_key: str) -> tuple[str |
         debug.append("[행안부] 요청 시간 초과 (10s)")
         return None, debug
     except Exception as e:
-        debug.append(f"[행안부] 예외: {e}")
+        debug.append(_redact(f"[행안부] 예외: {e}"))
         return None, debug

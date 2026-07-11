@@ -13,6 +13,8 @@ api/aladin_client.py
 
 from __future__ import annotations
 
+import re
+
 import requests
 
 # 041(번역서 판별)·245(700/710 저자정보)·653(목차/책소개)·260+300(기존)이
@@ -21,6 +23,18 @@ OPT_RESULT_FULL = (
     "authors,subInfo,seriesInfo,Toc,fulldescription,"
     "ebookList,usedList,reviewList,fileFormatList,packing,subbarcode"
 )
+
+_TTBKEY_RE = re.compile(r"(ttbkey=)[^&\s]+", re.IGNORECASE)
+
+
+def _redact(msg: str) -> str:
+    """
+    에러 메시지에 실패한 요청의 URL이 그대로 담기는 경우가 있다(예: requests의
+    HTTPError는 str(e)에 요청 URL 전체를 포함한다). /api/convert 실패 응답이
+    클라이언트에게 그대로 전달되므로, 여기 담긴 ttbkey 값을 마스킹해서 API 키가
+    에러 메시지를 통해 외부로 유출되지 않도록 한다.
+    """
+    return _TTBKEY_RE.sub(r"\1***", msg)
 
 
 def get_aladin_item_by_isbn(isbn: str, secrets: dict) -> tuple[dict, str | None]:
@@ -69,7 +83,7 @@ def get_aladin_item_by_isbn(isbn: str, secrets: dict) -> tuple[dict, str | None]
                 return {}, f"알라딘 검색 결과 없음: {isbn}"
             return items[0], None
         except Exception as e:
-            last_err = f"{key_name} 예외: {e}"
+            last_err = _redact(f"{key_name} 예외: {e}")
             continue
 
     return {}, last_err or f"알라딘 API 조회 실패: {isbn}"

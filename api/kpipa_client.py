@@ -10,7 +10,16 @@ KPIPA(한국출판문화산업진흥원) 공식 OpenAPI 클라이언트.
 
 from __future__ import annotations
 
+import re
+
 import requests
+
+_APIKEY_RE = re.compile(r"(apiKey=)[^&\s]+", re.IGNORECASE)
+
+
+def _redact(msg: str) -> str:
+    """실패한 요청 URL이 그대로 담기는 에러 메시지(str(e))에서 KPIPA 키를 가린다."""
+    return _APIKEY_RE.sub(r"\1***", msg)
 
 
 def get_kpipa_book_detail(isbn: str, api_key: str) -> tuple[dict, str | None]:
@@ -40,9 +49,9 @@ def get_kpipa_book_detail(isbn: str, api_key: str) -> tuple[dict, str | None]:
     except requests.exceptions.Timeout:
         return {}, "KPIPA API 요청 시간 초과 (8s)"
     except requests.exceptions.HTTPError as e:
-        return {}, f"KPIPA API HTTP 오류: {e}"
+        return {}, _redact(f"KPIPA API HTTP 오류: {e}")
     except Exception as e:
-        return {}, f"KPIPA API 예외: {e}"
+        return {}, _redact(f"KPIPA API 예외: {e}")
 
 
 def extract_kpipa_publisher_name(data: dict) -> str | None:
