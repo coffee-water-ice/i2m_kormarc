@@ -47,7 +47,7 @@ _FIELD_STATUS = [
     {"필드": "546", "의미": "언어주기",     "상태": "🚧 스텁",   "원본 폴더": "041",      "페이지": "-"},
     {"필드": "653", "의미": "자유주제어",   "상태": "🚧 스텁",   "원본 폴더": "653",      "페이지": "-"},
 ]
-st.dataframe(pd.DataFrame(_FIELD_STATUS), use_container_width=True, hide_index=True)
+st.dataframe(pd.DataFrame(_FIELD_STATUS), width="stretch", hide_index=True)
 
 st.divider()
 st.markdown(

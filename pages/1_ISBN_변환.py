@@ -233,7 +233,7 @@ with tab_batch:
         fail_count = total - success_count
 
         st.success(f"변환 완료 — 성공 {success_count}건 / 실패 {fail_count}건")
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width="stretch", hide_index=True)
 
         csv_bytes = _to_csv_bytes(df)
         st.download_button(
