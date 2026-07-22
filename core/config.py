@@ -3,9 +3,6 @@ core/config.py
 통합 설정 — 653 폴더의 pydantic-settings 패턴(INTEGRATION_PRINCIPLES.md #4)을
 전체 표준으로 채택하고, 041/245/260/300/653 5개 필드가 필요로 하는 키를 모두 선언한다.
 
-653은 아직 스텁이라 해당 키들은 기본값("")만 채워둔 상태이며, 실제 로직으로
-이식할 때 값을 채우면 코드 변경 없이 바로 동작한다.
-
 Streamlit Cloud처럼 .env 파일이 없는 배포 환경을 위해, load_streamlit_secrets_into_env()로
 .streamlit/secrets.toml → os.environ 브릿지를 제공한다(pydantic-settings 앞단의
 "소스" 어댑터로만 사용 — 두 설정 체계를 경쟁시키지 않는다, INTEGRATION_PRINCIPLES.md #4).
@@ -49,14 +46,28 @@ class Settings(BaseSettings):
     openai_model_300: str = Field(default="gpt-4o-mini", description="300 $b 삽화 판정 모델")
     openai_model_653: str = Field(default="gpt-4o", description="653 자유주제어 생성 모델")
 
+    # ── 653(자유주제어) 키워드 개수 ────────────────────────────
+    max_keywords_653: int = Field(default=7, description="653 최대 키워드 개수")
+    min_keywords_653: int = Field(default=5, description="653 최소 키워드 개수(미달 시 fallback 보강)")
+
     # ── KPIPA ─────────────────────────────────────────────────
     kpipa_api_key: str = Field(default="", description="KPIPA 출판유통통합전산망 OpenAPI 서비스키")
+    kpipa_enable_653: bool = Field(
+        default=False,
+        description="653이 KPIPA ONIX 목차(TextType 04)로 알라딘 목차를 보강할지 여부. "
+                     "원본(653 폴더)도 기본 비활성 — opt-in 기능.",
+    )
 
     # ── 행정안전부(MOIS) ──────────────────────────────────────
     data_go_kr: str = Field(default="", description="공공데이터포털 인증키 (행안부 출판사 조회)")
 
-    # ── 국립중앙도서관(NLK) — 245/653 스텁 이식 시 사용 ─────────
+    # ── 국립중앙도서관(NLK) — 245/653이 사용 ─────────────────────
     nlk_cert_key: str = Field(default="", description="국립중앙도서관 OpenAPI 인증키")
+    nlk_enable_653: bool = Field(
+        default=False,
+        description="653이 NLK Seoji 부가기호(content_code)로 카테고리 분류를 보정할지 여부. "
+                     "원본(653 폴더)도 기본 비활성 — opt-in 기능.",
+    )
 
     # ── 네이버 (300 책소개 보강) ──────────────────────────────
     naver_search_key_id: str = Field(default="", description="네이버 검색 API Client ID")

@@ -3,14 +3,16 @@ api/kpipa_client.py
 KPIPA(한국출판문화산업진흥원) 공식 OpenAPI 클라이언트.
 
 원본: 260+300/api/external_apis.py의 get_kpipa_book_detail(), _extract_kpipa_publisher_name().
-(참고: 653 폴더의 kpipa_client.py는 동일 엔드포인트에서 ONIX 목차(TextType 04)를
-추출하는 파서를 갖고 있었다 — 653 필드를 스텁에서 실제 로직으로 채울 때
-이 파일에 목차 추출 함수를 추가하면 된다.)
+653 필드용 ONIX 목차(TextType 04) 추출은 653/backend/app/kpipa_client.py에서
+이식(extract_kpipa_toc_only) — 동일 엔드포인트 응답을 재사용해 별도 호출 없이
+목차만 뽑아낸다. 기본은 비활성(core.config.Settings.kpipa_enable_653=False)이며
+원본도 opt-in 기능이었다.
 """
 
 from __future__ import annotations
 
 import re
+from typing import Any
 
 import requests
 
@@ -104,3 +106,74 @@ def extract_kpipa_publisher_name(data: dict) -> str | None:
         pass
 
     return None
+
+
+def _extract_kpipa_book_payload(raw: dict[str, Any]) -> dict[str, Any] | None:
+    """getBookDetail ONIX JSON에서 Product 1건 dict 추출(response.body.items.Product)."""
+    if not isinstance(raw, dict):
+        return None
+    resp = raw.get("response")
+    if not isinstance(resp, dict):
+        return None
+    body = resp.get("body")
+    if not isinstance(body, dict):
+        return None
+    items = body.get("items")
+    if not isinstance(items, dict):
+        return None
+    prod = items.get("Product")
+    if isinstance(prod, list):
+        return next((p for p in prod if isinstance(p, dict)), None)
+    if isinstance(prod, dict):
+        return prod
+    return None
+
+
+def _strip_html_simple(text: str) -> str:
+    if "<" not in (text or ""):
+        return text or ""
+    try:
+        from bs4 import BeautifulSoup
+        return BeautifulSoup(text, "html.parser").get_text(separator=" ", strip=True)
+    except Exception:
+        return re.sub(r"<[^>]+>", " ", text or "")
+
+
+def extract_kpipa_toc_only(raw: dict[str, Any]) -> str:
+    """
+    KPIPA ONIX Product에서 목차(CollateralDetail.TextContent, TextType=04)만 추출한다.
+    653(자유주제어) 필드가 알라딘 목차 보강용으로 사용 — 다른 필드는 사용하지 않는다.
+    """
+    product = _extract_kpipa_book_payload(raw)
+    if not product:
+        return ""
+    cd = product.get("CollateralDetail")
+    if not isinstance(cd, dict):
+        return ""
+    blocks = cd.get("TextContent")
+    if not isinstance(blocks, list):
+        return ""
+    plain: list[str] = []
+    fallback: list[str] = []
+    for b in blocks:
+        if not isinstance(b, dict) or str(b.get("TextType")) != "04":
+            continue
+        aud = b.get("ContentAudience")
+        aud0 = str(aud[0]) if isinstance(aud, list) and aud else ""
+        texts = b.get("Text")
+        if isinstance(texts, str):
+            text_list = [texts]
+        elif isinstance(texts, list):
+            text_list = texts
+        else:
+            text_list = []
+        merged = "\n".join(t.strip() for t in text_list if isinstance(t, str) and t.strip())
+        if not merged:
+            continue
+        cleaned = _strip_html_simple(merged)
+        (plain if aud0 == "02" else fallback).append(cleaned)
+    if plain:
+        return max(plain, key=len)
+    if fallback:
+        return max(fallback, key=len)
+    return ""

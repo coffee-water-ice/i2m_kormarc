@@ -1,12 +1,12 @@
 """
 pages/1_ISBN_변환.py
 041(언어코드)/546(언어주기) + 245/246/500/700/710/900/940(245 계열) +
-260(발행사항)/300(형태사항) 변환 페이지 — streamlit_app.py(Home)에서 분리.
+260(발행사항)/300(형태사항) + 653(자유주제어) 변환 페이지 —
+streamlit_app.py(Home)에서 분리.
 
 원래 streamlit_app.py 전체였던 내용을 그대로 옮겼다. Streamlit 멀티페이지 구조에서는
 루트의 streamlit_app.py가 진입점 겸 Home이 되고, pages/ 안의 파일들이 사이드바에
-자동으로 추가 페이지로 노출된다. 653을 이식할 때
-pages/2_... 형태로 검증용 페이지를 추가해 나간다.
+자동으로 추가 페이지로 노출된다.
 """
 
 from __future__ import annotations
@@ -116,6 +116,13 @@ with tab_single:
         else:
             st.success("변환 완료")
             meta = result.get("meta", {})
+
+            # ── 소요시간 · 토큰 사용량 (간단히 한 줄로) ──────────────
+            elapsed_ms = meta.get("elapsed_ms")
+            token_usage = meta.get("token_usage") or {}
+            total_tokens = token_usage.get("total_tokens", 0)
+            if elapsed_ms is not None:
+                st.caption(f"⏱️ 소요시간 **{elapsed_ms / 1000:.1f}초**  ·  🔢 GPT 토큰 **{total_tokens:,}개**")
 
             # ── 직접 수정 파트 (별도 이름 없이, 태그 오름차순 정렬 상태로 표시) ──
             sorted_mrk = _sort_mrk_lines(result.get("mrk_text", ""))

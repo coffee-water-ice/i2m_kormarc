@@ -21,6 +21,7 @@ import re
 from functools import lru_cache
 
 from core.debug_log import dbg
+from core import token_tracker
 from core.text_utils import (
     KNOWN_PEN_NAMES,
     TRANS_ROLES,
@@ -170,6 +171,8 @@ def _decide_name_order_via_llm_cached(hangul_name: str, context: str, openai_cli
             temperature=0,
             max_tokens=100,
         )
+        if response.usage:
+            token_tracker.add(response.usage.prompt_tokens, response.usage.completion_tokens)
         text = (response.choices[0].message.content or "").strip()
         text = re.sub(r"^```json\s*", "", text)
         text = re.sub(r"\s*```$", "", text).strip()

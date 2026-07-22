@@ -31,6 +31,7 @@ import re
 from typing import Any, Callable
 
 from core.debug_log import dbg, dbg_err
+from core import token_tracker
 from api.aladin_scraper import AladinAuthorScraper
 
 # ═══════════════════════════════════════════════════════════════
@@ -411,6 +412,8 @@ class LangFieldBuilder:
                 temperature=0,
                 max_tokens=300,   # CoT 단어별 나열 + 결론 여유 확보
             )
+            if resp.usage:
+                token_tracker.add(resp.usage.prompt_tokens, resp.usage.completion_tokens)
             content = (resp.choices[0].message.content or "").strip()
             code, reason, signals = _extract_code_and_reason(content, "$h")
 
@@ -471,6 +474,8 @@ $a=[ISDS 코드]
                 ],
                 temperature=0,
             )
+            if resp.usage:
+                token_tracker.add(resp.usage.prompt_tokens, resp.usage.completion_tokens)
             content = (resp.choices[0].message.content or "").strip()
             code, reason, signals = _extract_code_and_reason(content, "$a")
             if code not in ALLOWED_CODES:
@@ -792,6 +797,8 @@ $a=[ISDS 코드]
                 response_format={"type": "json_object"},
                 temperature=0,
             )
+            if resp.usage:
+                token_tracker.add(resp.usage.prompt_tokens, resp.usage.completion_tokens)
             raw = (resp.choices[0].message.content or "").strip()
             obj  = json.loads(raw)
             conf = (obj.get("author_signal_confidence") or "low").strip().lower()
