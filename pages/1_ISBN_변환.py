@@ -125,6 +125,19 @@ with tab_single:
                 st.caption(f"⏱️ 소요시간 **{elapsed_ms / 1000:.1f}초**  ·  🔢 GPT 토큰 **{total_tokens:,}개**")
 
             # ── 직접 수정 파트 (별도 이름 없이, 태그 오름차순 정렬 상태로 표시) ──
+            # 기본 글자 크기가 너무 작다는 피드백에 따라 이 textarea만 1.5배로 키운다
+            # (aria-label로 범위를 좁혀 일괄 변환 탭의 ISBN 목록 textarea는 영향받지 않는다).
+            st.markdown(
+                """
+                <style>
+                textarea[aria-label="MRK 직접 수정"] {
+                    font-size: 1.5em !important;
+                    line-height: 1.5 !important;
+                }
+                </style>
+                """,
+                unsafe_allow_html=True,
+            )
             sorted_mrk = _sort_mrk_lines(result.get("mrk_text", ""))
             seq = st.session_state.get("single_result_seq", 0)
             edited_mrk = st.text_area(
