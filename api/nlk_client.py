@@ -6,9 +6,11 @@ fetch_nlk_orig_info() / fetch_nlk_responsibility_statement():
   원본: 245/245/nlk_opac.py 전체. 소장자료 검색 + MARC 뷰 파싱으로 원서명(246)·
   원저자명(500) 및 책임표시를 보강한다. 245/500/700/900 계열이 사용.
 
-fetch_kdc_content_code_by_isbn() / fetch_nlk_hint_by_isbn():
-  653(자유주제어) 스텁을 이식할 때 채울 자리 — 653/backend/app/nlk_client.py는
-  Seoji API로 ISBN 부가기호(KDC 분류코드)만 조회하는 별도 용도였다. 아직 미구현.
+fetch_kdc_content_code_by_isbn():
+  653(자유주제어)이 카테고리가 "기타"/"인문학" 캐치올로 떨어질 때만 분야 라우팅
+  보조 신호로 쓰는 ISBN 부가기호(KDC 내용분류코드) 조회. 원본: 653/backend/app/
+  nlk_client.py의 Seoji 조회(httpx 비동기판)를 requests 동기판으로 이식.
+  기본은 비활성(core.config.Settings.nlk_enable_653=False, opt-in).
 """
 
 from __future__ import annotations
@@ -291,6 +293,44 @@ def fetch_nlk_responsibility_statement(isbn13: str, api_key: str = "") -> str | 
     return _parse_nlk_opac_xml(resp.text)
 
 
-def fetch_kdc_content_code_by_isbn(isbn: str, api_key: str) -> str | None:
-    """Seoji API로 ISBN 부가기호(KDC 내용분류코드)를 조회한다. (미구현 — 653 이식 시 채울 것)"""
-    raise NotImplementedError("653/backend/app/nlk_client.py의 Seoji 조회 함수를 이식해야 합니다.")
+_NLK_SEOJI_API_URL = "https://www.nl.go.kr/seoji/SearchApi.do"
+
+
+def fetch_kdc_content_code_by_isbn(isbn: str, api_key: str) -> str:
+    """
+    Seoji API로 ISBN 부가기호(EA_ADD_CODE)를 조회해 마지막 3자리(내용분류코드)를 반환한다.
+
+    653(자유주제어)이 알라딘 카테고리가 "기타"/"인문학" 캐치올로 떨어질 때만
+    분야 라우팅 보조 신호로 사용 — 조회 실패·키 없음 시 빈 문자열(다른 필드에는 영향 없음).
+    원본: 653/backend/app/nlk_client.fetch_kdc_content_code_by_isbn(httpx 비동기판)을
+    requests 동기판으로 이식.
+    """
+    key = (api_key or "").strip()
+    isbn13 = re.sub(r"[^0-9Xx]", "", (isbn or ""))
+    if not key or len(isbn13) != 13:
+        return ""
+
+    params = {
+        "cert_key": key,
+        "result_style": "json",
+        "page_no": 1,
+        "page_size": 1,
+        "isbn": isbn13,
+    }
+    try:
+        resp = requests.get(_NLK_SEOJI_API_URL, params=params, timeout=12, headers=_NLK_HEADERS)
+        resp.raise_for_status()
+        data = resp.json()
+        docs = data.get("docs") if isinstance(data, dict) else None
+        if not isinstance(docs, list) or not docs or not isinstance(docs[0], dict):
+            return ""
+        doc = docs[0]
+        ea_add_code = str(doc.get("EA_ADD_CODE") or "").strip()
+        if len(ea_add_code) >= 5 and ea_add_code.isdigit():
+            return ea_add_code[-3:]
+        kdc = str(doc.get("KDC") or "").strip()
+        if len(kdc) >= 3 and kdc[:3].isdigit():
+            return kdc[:3]
+        return ""
+    except Exception:
+        return ""

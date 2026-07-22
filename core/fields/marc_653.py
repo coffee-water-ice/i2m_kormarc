@@ -1,36 +1,1274 @@
 """
-653(자유주제어) 필드 생성 모듈 — STUB
+core/fields/marc_653.py
+KORMARC 653(자유주제어) 필드 생성 모듈.
 
-원본: 653/backend/app/ai_service.py (1239줄, docs/INTEGRATION_SURVEY.md 653 섹션 참고).
-이식 대상: finalize_653(...), generate_653_subfield_line(...), build_marc_653_line(...),
-CATEGORY_PROMPTS(18개 분야별 프롬프트), few_shots.json 로딩 로직.
+원본: 653/backend/app/ai_service.py(1239줄) + 653/backend/app/preprocess.py의
+카테고리별 GPT 프롬프트(18개 분야) + 키워드 필터링 파이프라인 전체.
 
-653은 원본에서 async 함수(httpx.AsyncClient, OpenAI Responses API)로 구현되어 있었다.
-app.py의 _run_conversion()은 현재 동기 함수이므로, 이 스텁을 실제 로직으로 채울 때
-app.py 오케스트레이터를 async def로 전환하고 260/300/041/245 동기 호출부는
-asyncio.to_thread(...)로 감싸야 한다(INTEGRATION_PRINCIPLES.md에는 명시되지 않은
-추가 이슈 — app.py의 _run_conversion 이식 시 함께 처리할 것).
+이식 시 적용한 원칙(docs/INTEGRATION_PRINCIPLES.md):
+  - #1  알라딘 조회는 api/aladin_client.get_aladin_item_by_isbn()이 이미 가져온
+        item(OPT_RESULT_FULL)을 그대로 쓴다. 653만을 위한 별도 ItemLookUp 재호출은
+        하지 않는다(041/245와 동일한 item 하나 공유).
+  - #2  원본은 OpenAI Responses API(client.responses.create, instructions 파라미터)를
+        AsyncOpenAI로 호출했다 — 강제로 chat.completions로 바꾸지 않고 Responses API를
+        그대로 유지하되, app.py를 통째로 async로 바꾸지 않기 위해 동기(openai.OpenAI)
+        클라이언트로 이식했다(openai 파이썬 SDK는 동기/비동기 클라이언트 모두
+        .responses.create()를 지원한다).
+  - #3  openai_client는 함수 인자로 주입.
+  - #6  예외를 반환값에 섞지 않고 (tag_653, error) 튜플로 반환.
+  - #7  core.debug_log.dbg/dbg_err + "[653]" 프리픽스로 판단 근거를 남긴다
+        (원본은 표준 logging만 사용해 사서용 추적성이 없었다 — 이식하며 보강).
+  - #9  이 모듈은 653 생성에만 책임진다. 알라딘 "출판사 제공 책소개" 크롤링은
+        api/aladin_scraper.py로, KPIPA ONIX 목차 추출은 api/kpipa_client.py로,
+        NLK 부가기호(content_code) 조회는 api/nlk_client.py로 분리했다(041의
+        AladinAuthorScraper 선례와 동일한 배치).
 
-few_shots.json은 data/few_shots.json 자리로 이식하고, quality_rubric.py(653의
-streamlit 품질평가 로직)는 streamlit_app.py 확장 시 함께 반영한다.
-
-적용할 원칙:
-  - #2  653 원본은 OpenAI Responses API(client.responses.create, instructions 파라미터)를
-        사용했다 — 강제로 chat.completions로 바꾸지 말고 그대로 유지할 것
-  - #6  에러는 (tag, error) 튜플로 반환
-  - #7  core.debug_log.dbg/dbg_err + "[653]" 프리픽스 사용 (원본은 표준 logging만 사용해
-        사서용 판단 근거 추적성이 없었으므로 이식 시 보강 대상)
+이식하며 의도적으로 생략한 것(원본에 있었지만 이 프로젝트 범위 밖으로 판단):
+  - ISBN 결과 TTL 캐시(_TtlCache) — 041/245/260/300 어떤 모듈도 캐시를 쓰지 않아
+    일관성이 깨지고, 단건 변환 아키텍처에는 이득이 없다.
+  - Google Sheets "골든데이터" 저장(sheets_service.py) — 이미 범용적인
+    database/feedback_logger.py(POST /api/feedback, field_tag 컬럼)가 동일한
+    역할(사서 최종 수정값 기록)을 하므로 별도 저장 경로를 새로 두지 않는다.
+    653 피드백은 field_tag="653"으로 기존 엔드포인트를 그대로 쓰면 된다.
+  - NLK/KPIPA 보강은 원본에서도 기본값이 비활성(nlk_enable/kpipa_enable=False)이었다.
+    이식 후에도 core.config.Settings.nlk_enable_653/kpipa_enable_653 기본값을
+    False로 유지해 동일하게 opt-in으로 남겨두었다.
 """
 
 from __future__ import annotations
 
+import json
+import re
+import unicodedata
+from pathlib import Path
 
-async def build_653_field(item: dict, secrets: dict | None = None, openai_client=None) -> tuple[str | None, str | None]:
+from core.debug_log import dbg, dbg_err
+from api.aladin_scraper import crawl_aladin_publisher_intro_and_toc
+from api.kpipa_client import get_kpipa_book_detail, extract_kpipa_toc_only
+from api.nlk_client import fetch_kdc_content_code_by_isbn
+
+# ═══════════════════════════════════════════════════════════════
+# 1. 전처리 유틸 (원본 preprocess.py 이식)
+# ═══════════════════════════════════════════════════════════════
+
+_TITLE_DERIVED_ALLOWED_KEYWORDS = {
+    "ai글쓰기", "생성형ai", "저작권", "창작윤리", "콘텐츠창작", "제미나이",
+    "구글ai", "구글워크스페이스", "노트북lm", "딥리서치", "ai코딩", "인공지능도구",
+}
+
+_CATEGORY_REMOVE_WORDS_DEFAULT = [
+    "국내도서", "외국도서", "실용서", "단행본", "ebook", "e-book", "전자책",
+    "베스트셀러", "신간", "스테디셀러", "md추천",
+]
+
+
+def _norm_text(text: str) -> str:
+    if not text:
+        return ""
+    text = unicodedata.normalize("NFKC", text).lower()
+    text = re.sub(r"[^\w\s가-힣]", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _clean_author_str(s: str) -> str:
+    if not s:
+        return ""
+    s = re.sub(r"\(.*?\)", " ", s)
+    s = re.sub(r"[/;·,]", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _extract_toc_major(toc: str, max_chars: int = 300) -> str:
+    """목차에서 장(章) 단위 제목만 추출. N장/N부/Part N 등 매칭, 후미 항목 제거."""
+    deny_keywords = {
+        "에필로그", "참고문헌", "부록", "찾아보기",
+        "색인", "저자소개", "감사의글", "옮긴이",
+        "프롤로그", "머리말", "들어가며",
+    }
+    lines = toc.replace("·", "\n").splitlines()
+    major = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        if any(d in line for d in deny_keywords):
+            continue
+        if re.match(
+            r"^(제?\s*\d+\s*[장부편권화]\s|part\s*\d+|chapter\s*\d+)",
+            line, re.IGNORECASE,
+        ):
+            major.append(line)
+    result = " / ".join(major)
+    if not result:
+        result = toc
+    return result[:max_chars]
+
+
+def _clean_toc_for_ai(toc_text: str) -> str:
+    """목차 문자열에서 페이지 번호·불용어를 제거하고 장 단위로 압축한다."""
+    if not toc_text:
+        return ""
+    text = re.sub(r"(\.{2,}|…|[-_]{2,})\s*\d+", " ", toc_text)
+    for word in ("목차", "차례", "CONTENTS"):
+        text = text.replace(word, " ")
+    cleaned = re.sub(r"\s+", " ", text).strip()
+    return _extract_toc_major(cleaned, max_chars=300)
+
+
+def _clean_description_for_ai(description_text: str) -> str:
+    """저자 이력/수상/출간 정보 위주 문장을 제거하고 주제 중심 설명만 남긴다."""
+    if not description_text:
+        return ""
+    text = description_text.replace("\r", "\n")
+    lines = [ln.strip() for ln in re.split(r"[\n]+", text) if ln.strip()]
+    bio_patterns = [
+        r"\b(19|20)\d{2}\s*년\b",
+        r"\b(작가|저자|역자|엮은이|지은이)\b",
+        r"\b(등단|수상|출간|데뷔|연재|활동)\b",
+        r"\b(장편소설|소설집|시집|산문집|평론집)\b",
+        r"\b(문학상|대상|우수상|신인상)\b",
+    ]
+    bio_re = re.compile("|".join(bio_patterns), flags=re.I)
+    kept: list[str] = []
+    for ln in lines:
+        if len(ln) <= 6 and bio_re.search(ln):
+            continue
+        if bio_re.search(ln):
+            continue
+        kept.append(ln)
+    if not kept:
+        fallback = re.sub(r"\s+", " ", description_text).strip()
+        return fallback[:1200]
+    out = re.sub(r"\s+", " ", " ".join(kept)).strip()
+    return out[:1200]
+
+
+def _clean_category_for_ai(category_str: str, remove_words: list[str] | None = None) -> str:
+    """알라딘 카테고리에서 유통성 분류어를 제거한다. 예: '국내도서 > 요리 > 한식' -> '요리 > 한식'"""
+    if not category_str:
+        return ""
+    words = remove_words or _CATEGORY_REMOVE_WORDS_DEFAULT
+    remove_exact = {_norm_text(w) for w in words}
+    remove_contains = tuple(_norm_text(w) for w in words)
+    parts = [p.strip() for p in category_str.split(">") if p.strip()]
+    cleaned: list[str] = []
+    for p in parts:
+        n = _norm_text(p)
+        if n in remove_exact:
+            continue
+        if any(tok in n for tok in remove_contains):
+            continue
+        if ("도서" in n or "판매" in n) and len(n) <= 8:
+            continue
+        cleaned.append(p)
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for c in cleaned:
+        key = _norm_text(c)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(c)
+    return " > ".join(deduped)
+
+
+def _build_forbidden_set(title: str, authors: str) -> set[str]:
+    t_norm = _norm_text(title)
+    a_norm = _norm_text(authors)
+    forb: set[str] = set()
+    if t_norm:
+        forb.update(t_norm.split())
+    if a_norm:
+        forb.update(a_norm.split())
+    return {f for f in forb if f and len(f) >= 2}
+
+
+_SENTENCE_ENDING_RE = re.compile(r"(합니다|습니다|겠습니다|없습니다|됩니다|입니다|않습니다|드립니다)$")
+
+
+def _should_keep_keyword(kw: str, forbidden: set[str]) -> bool:
+    n = _norm_text(kw)
+    compact = n.replace(" ", "")
+    if not n or len(compact) < 2:
+        return False
+    if len(compact) > 15:
+        return False
+    if _SENTENCE_ENDING_RE.search(compact):
+        return False
+    if compact in _TITLE_DERIVED_ALLOWED_KEYWORDS:
+        return True
+    for tok in forbidden:
+        tok_compact = tok.replace(" ", "")
+        if compact == tok_compact:
+            return False
+        if len(tok_compact) >= 3 and compact.startswith(tok_compact):
+            return False
+    return True
+
+
+# ═══════════════════════════════════════════════════════════════
+# 2. 카테고리별 GPT 지침 (18개 분야, 원본 그대로 이식)
+# ═══════════════════════════════════════════════════════════════
+
+CATEGORY_PROMPTS = {
+    "문학": (
+        "이 책은 문학 작품입니다.\n"
+        "아래 5가지 유형 안에서만 키워드를 선택. 총합 최대 5개.\n"
+        "근거 없는 슬롯은 비울 것. 억지로 채우지 말 것.\n\n"
+        "유형A 장르명 [분류에서 반드시 1개]\n"
+        "  분류 꼬리 하위 장르명. 단순 소설·시 금지, 수식어 필수.\n"
+        "  소설이면) 성장소설·심리소설·역사소설·페미니즘소설·추리소설·단편소설\n"
+        "  시집이면) 현대시·서정시·자연시·도시시·애도시·언어시 (단독 '시' 금지)\n"
+        "  희곡이면) 현대희곡·단막극·뮤지컬대본\n\n"
+        "유형B 테마·갈등 [0-1개. 조건 엄수]\n"
+        "  ① 문학 비평·도서 분류 시스템에서 이미 통용되는 단어만\n"
+        "  ② 독자가 이 테마를 검색할 때 실제로 검색창에 입력하는 단어여야 함\n"
+        "  ③ 줄거리 요약에서 파생한 신조 복합어 금지 (자아희생·생존본능 등)\n"
+        "  ④ 단독 추상명사 금지 (허영·위선·희생·욕망·운명)\n"
+        "  소설이면) 계급갈등·세대갈등·정체성혼란·트라우마·애도\n"
+        "  시집이면) 애도·상실·고독·죽음·자연·그리움 (시 안에서 반복되는 핵심 모티프만)\n\n"
+        "유형C 시대·배경 [0-1개. 설명·목차 명시된 경우만. 추정 금지]\n"
+        "  소설이면) 일제강점기·5·18·조선시대·냉전시대·메이지시대\n"
+        "  시집이면) 일제강점기·산업화시대 등 시집 전체를 관통하는 시대만\n\n"
+        "유형D 독자군·사회상황 [0-1개. 설명 명시된 경우만. 추정 금지]\n"
+        "  예) 중년여성·이민자가족·비혼여성·탈북자\n\n"
+        "유형E 트렌드어 [0-1개. 설명 명시된 경우만. 추정 금지]\n"
+        "  예) 퀴어문학·에코페미니즘·N포세대\n\n"
+        "금지: 감상어(따뜻한·여운·감동)\n"
+        "금지: 단독추상명사(삶·사랑·희망·그리움·허영·위선·희생·욕망·운명)\n"
+        "금지: 줄거리 파생 복합어(자아+X·생존+X·인간+X 패턴)\n"
+        "금지: 평론·메타표현(문학적탐구·서사구조·감정조각)\n"
+    ),
+    "에세이": (
+        "이 책은 에세이입니다.\n"
+        "아래 4개 슬롯 안에서만 키워드 선택. 총합 최대 5개.\n"
+        "근거 없는 슬롯은 비울 것. 억지로 채우지 말 것.\n\n"
+        "유형A 하위장르명 [1개, 필수]\n"
+        "  단독 '에세이' 금지. 수식어+에세이 형태 또는 구체 장르명.\n"
+        "  예) 여행에세이·일상에세이·음식에세이·치유에세이·그림에세이·일본에세이·철학에세이\n\n"
+        "유형B 구체 소재·공간 [0-2개]\n"
+        "  저자 삶의 핵심 소재. 추상어 금지, 구체 사물·장소·관계 우선.\n"
+        "  예) 반려견·제주도·병원·골목·커피·텃밭·산·책방\n\n"
+        "유형C 저자 정체성·삶의 조건 [0-1개]\n"
+        "  저자의 직업·삶의 상황이 뚜렷하게 드러난 경우.\n"
+        "  예) 워킹맘·간호사·제주살이·노년일상·싱글라이프·이민생활·투병기\n\n"
+        "유형D 시대·사회적 맥락 [0-1개. 설명 명시 시만]\n"
+        "  설명·목차에 명시된 사회적 상황이나 시대 배경.\n"
+        "  예) 코로나시대·갱년기·이별·육아·이민·귀농\n\n"
+        "금지: 감상어(따뜻한·힐링·위로·여운·공감·소소한·잔잔한)\n"
+        "금지: 단독 추상명사(삶·사랑·희망·행복·성장·치유·위로)\n"
+    ),
+    "철학": (
+        "이 책은 철학 도서입니다.\n"
+        "아래 5개 슬롯 안에서만 키워드 선택. 총합 최대 5개.\n"
+        "근거 없는 슬롯은 비울 것. 억지로 채우지 말 것.\n\n"
+        "유형A 분야명 [1개, 필수]\n"
+        "  카테고리 기반 구체 철학 분야명. 단독 '철학' 금지, 수식어 필수.\n"
+        "  예) 교양철학·현대철학·동양철학·윤리학·분석철학·정치철학\n\n"
+        "유형B 사상·이론·학파 [0-1개]\n"
+        "  학술 DB·도서관 분류에 이미 등재된 용어만. 저자·도서 고유 조어 금지.\n"
+        "  예) 실존주의·스토아철학·공리주의·관념론·니힐리즘·초인사상\n\n"
+        "유형C 인명·고유사상가 [0-1개. 제목·설명 명시 시만]\n"
+        "  제목·저자에 있으면 인명+분야 결합어. 설명·목차에만 등장하면 인명 단독.\n"
+        "  예) 니체철학·마르쿠스아우렐리우스·칸트윤리학·헤겔변증법\n\n"
+        "유형D 시대·지역 [0-1개. 설명·목차 명시 시만. 추정 금지]\n"
+        "  예) 고대철학·중세철학·서양고전·동양고전·그리스철학\n\n"
+        "유형E 현대사회 키워드 [0-1개. 설명 명시 시만]\n"
+        "  예) 생명윤리·AI윤리·환경윤리·동물권·생태윤리\n\n"
+        "금지: 저자·도서 고유 조어 (운명애·자기선택·삶의책임 등)\n"
+        "금지: 학문명+일반명사 광범위 조합 (삶의철학·존재의의미 등)\n"
+    ),
+    "역사": (
+        "이 책은 역사 도서입니다.\n"
+        "아래 5개 슬롯 안에서만 키워드 선택. 총합 최대 5개.\n"
+        "근거 없는 슬롯은 비울 것. 억지로 채우지 말 것.\n\n"
+        "유형A 분야명 [1개, 필수]\n"
+        "  책 전체를 아우르는 역사 분야명. 단독 '역사' 금지.\n"
+        "  예) 세계사·한국사·문명사·동양사·서양사·근현대사\n\n"
+        "유형B 지역·문명 [0-3개. 설명·목차 명시 시만]\n"
+        "  책에서 다루는 특정 지역·문명·국가. 여러 개 명시된 경우 최대 3개.\n"
+        "  예) 미노아문명·히타이트제국·인더스문명·고대이집트·메소포타미아\n\n"
+        "유형C 역사적 사건·주제 [0-1개. 설명·목차 명시 시만]\n"
+        "  예) 임진왜란·홀로코스트·냉전·식민지배·산업혁명\n\n"
+        "유형D 시대 세분화 [0-1개. 설명·목차 명시 시만]\n"
+        "  예) 고대사·중세사·조선시대·일제강점기·현대사\n\n"
+        "유형E 현대 해석·주제 [0-1개. 설명 명시 시만]\n"
+        "  예) 민족주의·역사왜곡·문명붕괴·제국주의\n\n"
+        "금지: 단독 시대어(고대·현대·근대 단독) — 분야명이나 지역과 결합 필수\n"
+        "금지: 역사일반·역사연구 등 상위 분류어\n"
+    ),
+    "심리학": (
+        "이 책은 심리학 도서입니다.\n"
+        "아래 5개 슬롯 안에서만 키워드 선택. 총합 최대 5개.\n"
+        "근거 없는 슬롯은 비울 것. 억지로 채우지 말 것.\n\n"
+        "유형A 분야명 [1개, 필수]\n"
+        "  카테고리 기반 구체 심리학 분야명. 단독 '심리학' 금지.\n"
+        "  예) 교양심리학·사회심리학·인지심리학·발달심리학·임상심리학\n\n"
+        "유형B 이론·개념 [0-1개]\n"
+        "  학술적으로 통용되는 심리학 이론·학파. 저자·도서 고유 조어 금지.\n"
+        "  예) 정신분석·행동주의·인지행동치료·애착이론·진화심리학\n\n"
+        "유형C 인명·핵심인물 [0-1개. 제목·설명 명시 시만]\n"
+        "  설명·목차에 명시된 심리학자 또는 관련 핵심 인물.\n"
+        "  예) 프로이트·융·피아제·셰익스피어·밀그램\n\n"
+        "유형D 심리적 주제·증상 [0-1개]\n"
+        "  독자가 검색창에 실제로 입력하는 심리적 주제어.\n"
+        "  예) 트라우마·번아웃·자존감·회복탄력성·우울증·성격장애\n\n"
+        "유형E 적용 분야 [0-1개. 설명·목차 명시 시만]\n"
+        "  심리학이 특정 분야에 적용되는 경우.\n"
+        "  예) 문학심리학·조직심리학·스포츠심리학·법심리학\n\n"
+        "금지: 목차 구조어 직접 사용 (본성대양육·사회적영향력 등)\n"
+    ),
+    "인문학": (
+        "이 책은 인문학 도서입니다.\n"
+        "- 사상적 개념·인문학적 주제어 위주. 예) 문명비판·동물권·생태윤리·글쓰는법·창작\n"
+        "- 상위분류명 단독 금지. 구체 하위개념으로 치환.\n"
+        "- 글쓰기·출판 관련이면: 생성형AI·AI글쓰기·저작권·창작윤리\n"
+    ),
+    "종교/역학": (
+        "이 책은 종교 또는 역학 도서입니다.\n"
+        "아래 5개 슬롯 안에서만 키워드 선택. 총합 최대 5개.\n"
+        "근거 없는 슬롯은 비울 것. 억지로 채우지 말 것.\n\n"
+        "유형A 분야명 [1개, 필수]\n"
+        "  종교이면) 불교·기독교·이슬람교·유대교·힌두교·천주교·개신교\n"
+        "  역학이면) 사주명리·풍수지리·타로·점성술·주역·수비학\n\n"
+        "유형B 교리·수행법·이론 [0-1개]\n"
+        "  예) 명상·참선·기도법·사주팔자·오행론·무속신앙·밀교\n\n"
+        "유형C 경전·텍스트 [0-1개. 제목·설명 명시 시만]\n"
+        "  예) 금강경·성경·코란·도덕경·논어·탈무드·반야심경\n\n"
+        "유형D 사상가·종단·인물 [0-1개. 설명·목차 명시 시만]\n"
+        "  예) 달라이라마·틱낫한·마틴루터·석가모니·바울·공자\n\n"
+        "유형E 현대 적용·맥락 [0-1개. 설명 명시 시만]\n"
+        "  예) 마음챙김·명상치유·종교사회학·신앙생활·영성\n\n"
+        "금지: 단독 '종교'·'신앙'·'믿음'·'신' 등 상위분류어\n"
+    ),
+    "사회정치": (
+        "이 책은 사회과학 도서입니다.\n"
+        "아래 5개 슬롯 안에서만 키워드 선택. 총합 최대 5개.\n"
+        "근거 없는 슬롯은 비울 것. 억지로 채우지 말 것.\n\n"
+        "유형A 분야명 [1개, 필수]\n"
+        "  카테고리 기반 구체 사회과학 분야명. 단독 '사회학' '정치학' 금지, 수식어 필수.\n"
+        "  예) 교양사회학·비교정치학·미디어사회학·국제관계학·행정학·법사회학·언론학\n\n"
+        "유형B 이론·사상·운동 [0-1개]\n"
+        "  학술DB·도서관 분류에 이미 등재된 용어만. 저자·도서 고유 조어 금지.\n"
+        "  예) 페미니즘·민주주의·복지국가론·시민권·공화주의·포퓰리즘·사회계약론\n\n"
+        "유형C 사회현상·이슈 [0-1개. 설명·목차 명시 시만]\n"
+        "  독자가 검색창에 실제로 입력하는 사회 현상어.\n"
+        "  예) 젠더갈등·양극화·이민문제·기후정치·언론자유·디지털감시·저출생\n\n"
+        "유형D 지역·제도·배경 [0-1개. 설명·목차 명시 시만. 추정 금지]\n"
+        "  예) 한국정치·유럽복지·미국민주주의·동아시아외교·남북관계\n\n"
+        "유형E 트렌드어 [0-1개. 설명 명시 시만]\n"
+        "  예) AI거버넌스·탈성장·기후정의·디지털민주주의·플랫폼자본주의\n\n"
+        "금지: 사회과학·사회문제 등 상위분류명 단독\n"
+        "금지: 단독 추상명사(평등·자유·정의·공동체 단독)\n"
+        "금지: 저자·도서 고유 조어\n"
+    ),
+    "경제경영": (
+        "이 책은 경제경영 도서입니다.\n"
+        "아래 5개 슬롯 안에서만 키워드 선택. 총합 최대 5개.\n"
+        "근거 없는 슬롯은 비울 것. 억지로 채우지 말 것.\n\n"
+        "유형A 분야명 [1개, 필수]\n"
+        "  카테고리 기반 구체 경영·경제 분야명. 단독 '경영' '경제' 금지, 수식어 필수.\n"
+        "  예) 마케팅전략·재무관리·창업경영·조직관리·투자금융·거시경제·행동경제학·인사관리\n\n"
+        "유형B 핵심 이론·방법론 [0-1개]\n"
+        "  학술·실무에서 통용되는 명칭만. 저자·도서 고유 조어 금지.\n"
+        "  예) 린스타트업·애자일경영·블루오션전략·가치투자·포트폴리오이론·OKR\n\n"
+        "유형C 산업·적용 영역 [0-1개. 설명·목차 명시 시만]\n"
+        "  예) 스타트업·부동산투자·주식시장·유통산업·IT경영·글로벌경영\n\n"
+        "유형D 트렌드어·신개념 [0-1개. 설명 명시 시만]\n"
+        "  예) ESG경영·디지털전환·공유경제·탈탄소경영·구독경제\n\n"
+        "유형E 독자층·직무 [0-1개. 설명 명시 시만]\n"
+        "  예) 직장인재테크·초보투자자·스타트업창업자·중간관리자·CFO실무\n\n"
+        "금지: 단독 추상명사(성공·혁신·성장·변화·리더십·전략 단독)\n"
+        "금지: 경영일반·경제일반 등 상위분류명\n"
+        "금지: 도서 고유 조어나 저자 상표어\n"
+    ),
+    "자기계발": (
+        "이 책은 자기계발 도서입니다.\n"
+        "아래 5개 슬롯 안에서만 키워드 선택. 총합 최대 5개.\n"
+        "근거 없는 슬롯은 비울 것. 억지로 채우지 말 것.\n\n"
+        "유형A 핵심 주제 [1개, 필수]\n"
+        "  단독 '자기계발' 금지. 구체 행동·변화 영역으로.\n"
+        "  예) 시간관리·습관형성·감정조절·인간관계·리더십·커리어개발·재테크\n\n"
+        "유형B 심리기제·개념 [0-1개]\n"
+        "  학술적으로 통용되는 심리·행동 개념. 저자 고유 조어 금지.\n"
+        "  예) 인지재구성·자기효능감·성장마인드셋·번아웃·완벽주의·애착유형\n\n"
+        "유형C 사상가·고유 이론 [0-1개. 제목·설명 명시 시만]\n"
+        "  제목·설명에 등장하는 사상가 또는 그 이론명.\n"
+        "  예) 아들러·드러커·스티브잡스·아토믹해빗·포모도로기법\n\n"
+        "유형D 적용 대상·상황 [0-1개. 설명 명시 시만]\n"
+        "  예) 직장인·신입사원·번아웃경험자·청소년·부모·내향인\n\n"
+        "유형E 현대 맥락 [0-1개. 설명 명시 시만]\n"
+        "  예) AI시대·워라밸·디지털노마드·창업·부업·퇴사\n\n"
+        "금지: 추상 형용사(긍정적·열정적·행복한)\n"
+        "금지: 단독 추상명사(성공·행복·꿈·자신감·용기)\n"
+    ),
+    "자연과학": (
+        "이 책은 자연과학 도서입니다.\n"
+        "아래 5개 슬롯 안에서만 키워드 선택. 총합 최대 5개.\n"
+        "근거 없는 슬롯은 비울 것. 억지로 채우지 말 것.\n\n"
+        "유형A 연구분야명 [1개, 필수]\n"
+        "  카테고리 기반 구체 연구분야. 단독 '과학'·'자연' 금지.\n"
+        "  예) 천문학·분자생물학·신경과학·양자물리학·기후과학·수리물리학·생태학\n\n"
+        "유형B 핵심 이론·개념 [0-1개]\n"
+        "  학술 DB에 이미 등재된 이론·원리·법칙명만.\n"
+        "  예) 진화론·양자역학·상대성이론·판구조론·자연선택·유전학\n\n"
+        "유형C 탐구 대상·현상 [0-1개. 설명·목차 명시 시만]\n"
+        "  책이 집중하는 구체적 자연 현상이나 연구 대상.\n"
+        "  예) 블랙홀·DNA·외계행성·바이러스·빙하·소립자·뇌신경\n\n"
+        "유형D 과학자·발견·프로젝트 [0-1개. 설명·목차 명시 시만. 추정 금지]\n"
+        "  예) 다윈·아인슈타인·CRISPR·허블망원경·제임스웹·맨해튼프로젝트\n\n"
+        "유형E 응용·사회적 맥락 [0-1개. 설명 명시 시만]\n"
+        "  과학이 현대 사회·기술과 연결되는 지점.\n"
+        "  예) 기후위기·우주탐사·유전자편집·양자컴퓨팅·인공지능\n\n"
+        "금지: 단독 '과학'·'연구'·'자연' 등 상위분류어\n"
+        "금지: 세계관·과학탐구·과학적논리 등 메타표현\n"
+        "금지: 설명·목차 근거 없는 인물명·실험명 추정 생성\n"
+    ),
+    "IT컴퓨터": (
+        "이 책은 IT·컴퓨터 도서입니다.\n"
+        "아래 5개 슬롯 안에서만 키워드 선택. 총합 최대 5개.\n"
+        "근거 없는 슬롯은 비울 것. 억지로 채우지 말 것.\n\n"
+        "유형A 분야명 [1개, 필수]\n"
+        "  카테고리 기반 구체 IT 분야명. 단독 'IT'·'컴퓨터'·'기술'·'소프트웨어' 금지.\n"
+        "  예) 파이썬프로그래밍·웹개발·머신러닝·데이터분석·네트워크보안·앱개발·데이터베이스\n\n"
+        "유형B 기술·기법 [0-1개]\n"
+        "  업계 표준·학술 DB에 등재된 기술명·알고리즘·아키텍처.\n"
+        "  예) 딥러닝·강화학습·RESTful API·마이크로서비스·클라우드컴퓨팅·알고리즘·자연어처리\n\n"
+        "유형C 도구명·서비스명·플랫폼 [0-1개. 설명·목차 명시 시만]\n"
+        "  책에서 직접 다루는 특정 도구·서비스·언어명. 추정 금지.\n"
+        "  예) ChatGPT·TensorFlow·React·AWS·파이썬·자바스크립트·제미나이·노트북LM\n\n"
+        "유형D 수준·대상 [0-1개. 설명·제목 명시 시만]\n"
+        "  독자 수준이나 직군이 명시된 경우에만.\n"
+        "  예) 입문자·비전공자·실무개발자·데이터사이언티스트·AI활용직장인\n\n"
+        "유형E 응용·현대맥락 [0-1개. 설명 명시 시만]\n"
+        "  기술이 특정 산업·사회 문제와 연결되는 지점.\n"
+        "  예) AI거버넌스·핀테크·헬스테크·스마트팩토리·자율주행·블록체인\n\n"
+        "금지: 단독 'IT'·'컴퓨터'·'기술'·'소프트웨어'·'프로그래밍' 등 상위분류어\n"
+        "금지: 근거 없는 기술 스택 추정 (언급 없는 언어·프레임워크 생성 금지)\n"
+    ),
+    "생활실용": (
+        "이 책은 생활실용 도서입니다. 카테고리를 확인해 해당 분야 예시를 우선 참고할 것.\n"
+        "아래 5개 슬롯 안에서만 키워드 선택. 총합 최대 5개.\n"
+        "근거 없는 슬롯은 비울 것. 억지로 채우지 말 것.\n\n"
+        "유형A 분야명 [1개, 필수]\n"
+        "  카테고리 기반 구체 분야명. 단독 '요리'·'건강'·'운동'·'취미'·'살림' 금지.\n"
+        "  요리이면) 한식조리·베이킹·비건요리·발효식품·카페베이킹·이유식\n"
+        "  건강/운동이면) 근력운동·요가·필라테스·암벽등반·수영·골프·테니스·영양관리·한방건강\n"
+        "  취미이면) 뜨개질·실내원예·수채화·우쿨렐레·도예·사진촬영·독서법\n"
+        "  살림이면) 인테리어·수납정리·홈케어·청소법·제로웨이스트\n"
+        "  건축이면) 주거건축·공공건축·박물관건축·종교건축·도시공원·조경설계·인테리어설계·건축역사·도시계획\n\n"
+        "유형B 핵심 기법·재료·도구 [0-1개]\n"
+        "  실습에서 다루는 구체 기술명·재료명·운동기법.\n"
+        "  요리이면) 수비드·발효·저온조리·글루텐프리·콜드브루\n"
+        "  건강/운동이면) HIIT·인터벌트레이닝·맨몸운동·스트레칭·마음챙김·홀딩기법·리드클라이밍\n"
+        "  취미(원예)이면) 삽목·수경재배·분갈이·퇴비·허브재배\n"
+        "  취미(공예)이면) 코바늘·대바늘·수채화재료·가죽공예\n\n"
+        "유형C 구체 재료·식물·신체부위 [0-1개. 설명·목차 명시 시만]\n"
+        "  책이 집중하는 구체적 재료·식물종류·음식·신체부위.\n"
+        "  요리이면) 두부·채식식단·밀가루반죽·발효채소\n"
+        "  건강이면) 코어근육·어깨통증·무릎통증\n"
+        "  취미(원예)이면) 다육식물·관엽식물·허브·실내식물·베란다채소\n\n"
+        "유형D 적용 대상·목적 [0-1개. 설명·제목 명시 시만]\n"
+        "  독자층이나 목적이 명시된 경우.\n"
+        "  예) 다이어트식·어린이식·노인건강·임산부요가·혼밥요리·초보식집사·초보클라이머\n\n"
+        "유형E 트렌드·현대맥락 [0-1개. 설명 명시 시만]\n"
+        "  예) 채식주의·비건트렌드·제로웨이스트·홈리빙·미니멀라이프·플랜테리어\n\n"
+        "금지: 단독 '음식'·'건강'·'운동'·'취미'·'살림' 등 상위분류어\n"
+        "금지: 감상어·메타표현 (맛있는·건강한삶·행복한식탁·루틴관리 등)\n"
+    ),
+    "예술": (
+        "이 책은 예술 도서입니다. 카테고리를 확인해 해당 분야 예시를 우선 참고할 것.\n"
+        "아래 5개 슬롯 안에서만 키워드 선택. 총합 최대 5개.\n"
+        "근거 없는 슬롯은 비울 것. 억지로 채우지 말 것.\n\n"
+        "유형A 분야명 [1개, 필수]\n"
+        "  카테고리 기반 구체 예술 분야명. 단독 '음악'·'미술'·'영화'·'예술' 금지.\n"
+        "  음악이면) 클래식음악·실용음악·재즈·국악·대중음악·피아노교육\n"
+        "  미술이면) 서양화·현대미술·사진예술·그래픽디자인·일러스트·조각\n"
+        "  영화·방송이면) 한국영화·다큐멘터리·애니메이션·OTT드라마·영화비평\n"
+        "  공연·무용이면) 연극연출·뮤지컬제작·현대무용·발레·전통예술\n\n"
+        "유형B 장르·기법·매체 [0-1개]\n"
+        "  음악이면) 피아노·기타·화성학·작곡기법·편곡법·즉흥연주\n"
+        "  미술이면) 수채화·유화·드로잉·판화·설치미술·디지털아트\n"
+        "  영화·방송이면) 시나리오작법·영상편집·SF영화·독립영화·쇼트폼\n"
+        "  공연·무용이면) 무대기술·안무법·즉흥연기·스타니슬랍스키\n\n"
+        "유형C 사조·이론·운동 [0-1개. 설명 명시 시만. 추정 금지]\n"
+        "  음악이면) 바로크음악·낭만주의음악·케이팝·재즈역사\n"
+        "  미술이면) 인상주의·추상표현주의·미니멀리즘·팝아트·바우하우스\n"
+        "  영화이면) 누벨바그·뉴할리우드·한국영화르네상스\n"
+        "  공연이면) 브레히트연극·서양연극사·현대무용사\n\n"
+        "유형D 창작자·인물 [0-1개. 설명·목차 명시 시만. 제목·저자 반복 금지]\n"
+        "  음악이면) 베토벤·쇼팽·마일스데이비스·방탄소년단\n"
+        "  미술이면) 모네·피카소·이중섭·박수근·앤디워홀\n"
+        "  영화이면) 봉준호·박찬욱·구로사와·고다르\n\n"
+        "유형E 시대·지역·트렌드 [0-1개. 설명 명시 시만]\n"
+        "  예) 20세기미술·한국현대미술·일본애니메이션역사·인터랙티브아트\n\n"
+        "금지: 단독 '음악'·'미술'·'영화'·'예술'·'공연' 및 XX감상·XX세계·XX사조 형태\n"
+        "금지: 설명·목차에 없는 사조명·인물명 추정 생성\n"
+    ),
+    "교육": (
+        "이 책은 교육 도서입니다.\n"
+        "아래 5개 슬롯 안에서만 키워드 선택. 총합 최대 5개.\n"
+        "근거 없는 슬롯은 비울 것. 억지로 채우지 말 것.\n\n"
+        "유형A 분야명 [1개, 필수]\n"
+        "  교육학이면) 개혁교육학·대안교육·특수교육·유아교육·평생교육\n"
+        "  대학교재이면) 해당 학문 분야명. 예) 경영학원론·법학개론·심리학개론·공업수학·선형대수학·유기화학·열역학\n"
+        "  수험서이면) 공무원시험·편입시험·자격증시험\n"
+        "  학부모/육아이면) 육아법·자녀교육·학습코칭·자녀소통·부모교육\n\n"
+        "유형B 시험명·자격증명 [0-1개. 제목·설명 명시 시만]\n"
+        "  예) 수능·공무원시험·편입·TOPIK\n"
+        "  시험명은 이용자가 실제로 검색하는 형태로.\n\n"
+        "유형C 핵심 이론·개념 [0-1개. 교육학·대학교재·학부모 한정]\n"
+        "  예) 구성주의·교육과정·발달심리학·학습이론·비판교육학·행동주의·애착육아\n\n"
+        "유형D 학습 방법론·특성 [0-1개. 설명·목차 명시 시만]\n"
+        "  예) 플립러닝·문제중심학습·프로젝트학습·협동학습·개별화학습\n\n"
+        "유형E 대상·현대맥락 [0-1개. 설명 명시 시만]\n"
+        "  예) 성인학습·다문화교육·영재교육·홈스쿨링·원격교육·초등입학·사춘기자녀\n\n"
+        "금지: 단독 '교육'·'학습' 등 상위분류어\n"
+        "금지: 단독 '기초'·'입문'·'고급' (과목명 없이 단독 사용)\n"
+        "금지: 계열명 단독 사용 ('경상계열'·'이공계열'·'사범계열' 등)\n"
+        "금지: 단독 '육아'·'좋은부모' (구체 영역과 결합 필수)\n"
+    ),
+    "외국어": (
+        "이 책은 외국어 학습 도서입니다.\n"
+        "아래 5개 슬롯 안에서만 키워드 선택. 총합 최대 5개.\n"
+        "근거 없는 슬롯은 비울 것. 억지로 채우지 말 것.\n\n"
+        "유형A 언어명+학습유형 [1개, 필수]\n"
+        "  언어+기능: 영어회화·영어독해·영어듣기·영어쓰기·일본어회화·중국어회화·스페인어입문·프랑스어독해\n"
+        "  언어+시험: 토익·토플·IELTS·JLPT·HSK·TOEIC스피킹·한국어교육(TOPIK)\n\n"
+        "유형B 학습 기능·스킬 [0-1개. 설명 명시 시만]\n"
+        "  예) 쉐도잉·문법·어휘확장·영어발음·듣기훈련·속독·고득점전략\n\n"
+        "유형C 수준·대상 [0-1개. 제목·설명 명시 시만]\n"
+        "  예) 초급자·중급자·고급자·직장인영어·여행영어·비즈니스영어·TOEIC수험생\n\n"
+        "유형D 교재 형식 [0-1개. 설명 명시 시만]\n"
+        "  예) 실전모의고사·기출문제·단어장·문법교본\n\n"
+        "유형E 응용맥락 [0-1개. 명시 시만]\n"
+        "  예) 미국문화·뉴스영어·팝송영어·드라마영어\n\n"
+        "금지: 단독 '외국어'·'영어'·'언어' (구체적 언어명+기능/시험 형태 사용)\n"
+        "금지: '자기주도학습'·'종합' 등 학습 일반어\n"
+    ),
+    "여행": (
+        "이 책은 여행 도서입니다.\n"
+        "아래 5개 슬롯 안에서만 키워드 선택. 총합 최대 5개.\n"
+        "근거 없는 슬롯은 비울 것. 억지로 채우지 말 것.\n\n"
+        "유형A 지역+여행형태 [1개, 필수]\n"
+        "  국가/지역명 + 가이드북·에세이·기행 등 결합. 단독 '여행' 금지.\n"
+        "  예) 일본여행가이드북·유럽도시기행·국내여행에세이·동남아한달살기\n\n"
+        "유형B 여행스타일 [0-1개]\n"
+        "  예) 한달살기·배낭여행·가족여행·나홀로여행·미식여행·자유여행·성지순례\n\n"
+        "유형C 명소·구체장소 [0-1개. 설명·목차 명시 시만. 추정 금지]\n"
+        "  예) 도쿄타워·마추픽추·산티아고순례길·제주올레길\n\n"
+        "유형D 대상·목적 [0-1개. 설명 명시 시만]\n"
+        "  예) 아이동반여행·신혼여행·은퇴여행·출장족·초보여행자\n\n"
+        "유형E 트렌드·현대맥락 [0-1개. 설명 명시 시만]\n"
+        "  예) 워케이션·소도시여행·다크투어리즘·지속가능여행\n\n"
+        "금지: 단독 '여행' 및 '국내여행'·'해외여행' 단독 표기\n"
+        "금지: 감상어(힐링·설렘·낭만적·특별한)\n"
+    ),
+    "기타": (
+        "이 책은 명확한 전문분야로 분류하기 어려운 도서입니다(전집·세트상품, 분류 실패 등 포함).\n"
+        "아래 4개 슬롯 안에서만 키워드 선택. 총합 최대 5개. 무리하게 채우지 말 것.\n"
+        "다른 분야보다 느슨하게 적용하되, 상품형태어·감상어는 동일하게 금지.\n\n"
+        "유형A 핵심 주제·분야명 [1개, 필수]\n"
+        "  분류·제목·목차에서 파악되는 가장 구체적인 주제. 전집/세트면 대상연령+장르로.\n"
+        "  예) 초등학습만화전집·유아창작동화전집·세계여행에세이·육아심리·동양고전\n\n"
+        "유형B 소재·구성 [0-2개]\n"
+        "  책이 실제로 다루는 구체 소재. 추상어 금지.\n"
+        "  예) 과학원리·역사인물·경제개념·생활영어·전래동화\n\n"
+        "유형C 대상 독자층 [0-1개. 명시된 경우만]\n"
+        "  예) 초등저학년·미취학아동·청소년·성인초보자\n\n"
+        "유형D 트렌드·현대맥락 [0-1개. 명시된 경우만]\n"
+        "  예) 문해력·창의사고력·디지털리터러시\n\n"
+        "금지: 단독 '전집'·'세트'·'시리즈' 등 상품형태어\n"
+        "금지: 감상어·메타표현\n"
+    ),
+}
+
+CATEGORY_MAP = {
+    "소설": "문학", "시": "문학", "희곡": "문학", "에세이": "에세이", "장르소설": "문학",
+    "인문학": "인문학", "역사": "역사", "종교": "종교/역학", "역학": "종교/역학",
+    "사회과학": "사회정치", "경제경영": "경제경영", "자기계발": "자기계발",
+    "과학": "자연과학", "컴퓨터": "IT컴퓨터", "모바일": "IT컴퓨터",
+    "건강": "생활실용", "취미": "생활실용", "요리": "생활실용", "살림": "생활실용",
+    "예술": "예술", "대중문화": "예술", "대학교재": "교육", "외국어": "외국어",
+    "여행": "여행", "전집": "기타", "좋은부모": "교육",
+}
+
+# 단순 장르명 필터 — 한정어 없이 장르만 단독으로 쓰인 경우
+_PURE_GENRE_LABELS = frozenset({
+    "에세이", "수필", "산문", "소설", "희곡", "동화", "만화", "웹툰",
+    "시집", "소설집", "산문집", "에세이집", "단편집", "수필집",
+    "그림책", "동시집", "시화집",
+})
+
+_COUNTRY_GENRE_RE = re.compile(
+    r"^(한국|국내|외국|해외)"
+    r"(문학|소설|에세이|시|희곡|단편소설|장편소설|수필|동화|산문|시집|소설집|산문집|문예|시문학)$"
+)
+_EXTENDED_COUNTRY_GENRE_RE = re.compile(
+    r"^(현대|당대|근대)?(한국|국내)\w{0,6}(소설|시|희곡|문학|에세이|수필|산문)$"
+)
+_LOW_VALUE_SUFFIX_RE = re.compile(
+    r"(의미|이면|반추|가치관?|문체|정서|사유|고찰|성찰|탐색|탐구|조명|통찰|담론|해석|인식론?|존재론?|감상)$"
+)
+_LIT_ABSTRACT_NOUNS = frozenset({
+    "운명", "인연", "만남", "이별", "기억", "시간", "삶", "죽음",
+    "사랑", "희망", "용기", "꿈", "행복", "슬픔", "고통", "외로움", "그리움",
+    "존재", "자아", "성장", "치유", "회복", "위로", "공감",
+    "허영", "위선", "희생", "욕망", "탐욕", "좌절", "분노", "공허", "허무",
+    "집착", "배신", "복수", "절망", "체념", "갈망", "고독",
+})
+_ESSAY_SENTIMENT_RE = re.compile(
+    r"^(따뜻한?|따스한?|여운|감성적?|힐링|위로|공감|소소한?|잔잔한?|잔잔함"
+    r"|감동적?|아늑한?|포근한?|따뜻함|아름다운?|사색적?|서정적?|담담한?)$"
+)
+_LITERATURE_META_RE = re.compile(
+    r"(문학적|비평적|미학적|서사적)(조각|형상|탐구|사유|분석|읽기)$"
+    r"|^(감정|정서|내적|심리)서사$"
+    r"|^(언어|담론|서사|비평)(탐구|분석|구조|전략)$"
+)
+_LIT_DERIVED_COMPOUND_RE = re.compile(
+    r"^(자아|인간|지구|인류|생명|사회|세상|우주|존재|타인)"
+    r"(희생|생존|위선|파멸|본능|구원|탐욕|욕망|갈등|투쟁|소멸|초월)$"
+)
+_UI_CONNECTOR_RE = re.compile(r"^[가-힣]{1,5}의[가-힣]{2,5}$")
+
+LOW_VALUE_KEYWORDS = {
+    "취미", "건강정보", "자기계발", "사회과학", "사회정치", "경제경영",
+    "사회문제", "사회문제일반", "2000년대이후", "문학적탐구", "사랑의형상", "사랑형상",
+    "감정조각", "문학적형상", "소설/시/희곡", "문학적조각", "감정서사", "언어탐구",
+    "서사구조", "서사전략", "연구", "개론", "이론", "실천", "활동", "접근", "관점",
+    "방향", "현황", "동향", "개요", "사례", "특징", "의의", "시사점", "과제",
+    "미술사조", "미술감상", "음악감상", "예술세계", "작품세계", "예술감상", "그림감상",
+    "사회학일반", "사회학", "정치학일반", "정치학", "행정학", "교육일반", "교육학",
+    "법과생활", "행정학일반", "경영일반", "경제일반",
+    "음악일반", "음악", "미술일반", "미술", "영화일반", "영화", "예술일반",
+    "공연일반", "대중문화", "연극일반", "무용일반",
+    "컴퓨터일반", "소프트웨어일반", "IT일반", "정보통신",
+    "생활실용", "생활정보", "실용서",
+    "대학교재", "전문서적", "공학일반", "공학계열", "인문계열", "자연계열",
+    "예체능계열", "사범계열", "경상계열", "이공계열",
+    "외국어", "자기주도학습", "종합",
+    "성공학", "성공",
+    "머리말", "책머리에", "들어가며", "프롤로그", "에필로그", "맺음말", "나가며",
+    "Part", "Chapter", "Vol", "Section", "무엇인가", "내가", "찾기",
+}
+
+CONTENT_FORMAT_TOKENS = ("팁", "비결", "상식", "추천", "모음")
+NATURAL_PHRASE_PREFIXES = ("활기찬", "품격있는", "특별한")
+LOW_VALUE_SUFFIXES = ("적조명", "특별함")
+NATURAL_SCIENCE_LOW_VALUE_KEYWORDS = {"세계관", "세계구성", "과학탐구", "과학적논리", "과학논리"}
+
+CATEGORY_CANDIDATE_DENY = {
+    "과학", "문학", "역사", "철학", "인문학", "심리학", "건강", "취미", "요리", "살림",
+    "다이어트", "건강정보", "기술과학", "IT", "컴퓨터", "소프트웨어", "생활실용",
+    "자기계발", "종교", "신앙", "역학", "국내도서", "외국도서", "외국어", "영어",
+    "여행", "전집", "세트", "시리즈", "육아", "좋은부모",
+}
+
+# ISBN 부가기호(EA_ADD_CODE) 마지막 3자리 → category_group.
+# KDC 100구분(강) 공식표 기준. 매핑 없는 강은 의도적으로 비워둠(억지로 끼워맞추지 않음).
+_KDC_CONTENT_CODE_RANGES: list[tuple[int, int, str]] = [
+    (814, 814, "에세이"),
+    (800, 819, "문학"),
+    (820, 899, "문학"),
+    (980, 989, "여행"),
+    (900, 999, "역사"),
+    (100, 179, "철학"),
+    (180, 189, "심리학"),
+    (190, 199, "철학"),
+    (200, 299, "종교/역학"),
+    (320, 329, "경제경영"),
+    (330, 339, "사회정치"),
+    (370, 379, "교육"),
+    (300, 399, "사회정치"),
+    (400, 499, "자연과학"),
+    (510, 510, "생활실용"),
+    (540, 540, "생활실용"),
+    (560, 560, "IT컴퓨터"),
+    (590, 599, "생활실용"),
+    (600, 689, "예술"),
+    (690, 699, "생활실용"),
+    (720, 799, "외국어"),
+]
+_KDC_OVERRIDE_TARGET_GROUPS = frozenset({"기타", "인문학"})
+
+
+def kdc_content_code_to_group(content_code: str) -> str | None:
+    """3자리 내용분류코드 → category_group. 매핑 없으면 None."""
+    code = (content_code or "").strip()
+    if len(code) != 3 or not code.isdigit():
+        return None
+    n = int(code)
+    for lo, hi, group in _KDC_CONTENT_CODE_RANGES:
+        if lo <= n <= hi:
+            return group
+    return None
+
+
+def _category_group_from_text(category: str) -> str:
+    """알라딘 카테고리 문자열만으로 대분류를 찾는다."""
+    cat = category or ""
+    if "인문학" in cat:
+        if "심리학" in cat or "정신분석" in cat:
+            return "심리학"
+        if "철학" in cat:
+            return "철학"
+    if "경제경영" in cat:
+        return "경제경영"
+    if "사회과학" in cat and "교육학" in cat:
+        return "교육"
+    if "예술" in cat or "대중문화" in cat:
+        if "건축" in cat:
+            return "생활실용"
+    parts = [part.strip() for part in cat.split(">") if part.strip()]
+    for part in parts:
+        for key, group in CATEGORY_MAP.items():
+            if key in part:
+                return group
+    for key, group in CATEGORY_MAP.items():
+        if key in cat:
+            return group
+    return "기타"
+
+
+def get_category_group(category: str, content_code: str = "") -> str:
+    """카테고리 대분류를 반환. "기타"/"인문학" 캐치올이면 부가기호로 보정."""
+    group = _category_group_from_text(category)
+    if group in _KDC_OVERRIDE_TARGET_GROUPS and content_code:
+        override = kdc_content_code_to_group(content_code)
+        if override:
+            return override
+    return group
+
+
+def get_category_prompt(category: str, content_code: str = "") -> str:
+    group = get_category_group(category, content_code)
+    return CATEGORY_PROMPTS.get(group, CATEGORY_PROMPTS["기타"])
+
+
+def _is_low_value_keyword(normalized_keyword: str, category_group: str = "") -> bool:
+    compact = normalized_keyword.replace(" ", "")
+    if compact in LOW_VALUE_KEYWORDS:
+        return True
+    if compact in CATEGORY_CANDIDATE_DENY:
+        return True
+    if re.fullmatch(r"\d{4}년대이후.*", compact):
+        return True
+    if category_group == "자연과학" and compact in NATURAL_SCIENCE_LOW_VALUE_KEYWORDS:
+        return True
+    if "url" in compact or "kdc" in compact:
+        return True
+    if re.search(r"[一-鿿㐀-䶿]", compact):
+        return True
+    if compact.startswith("key"):
+        return True
+    if any(token in compact for token in CONTENT_FORMAT_TOKENS):
+        return True
+    if any(compact.startswith(prefix) for prefix in NATURAL_PHRASE_PREFIXES):
+        return True
+    if any(compact.endswith(suffix) for suffix in LOW_VALUE_SUFFIXES):
+        return True
+    if _COUNTRY_GENRE_RE.match(compact):
+        return True
+    if _EXTENDED_COUNTRY_GENRE_RE.match(compact):
+        return True
+    if category_group in ("문학", "에세이") and _LITERATURE_META_RE.search(compact):
+        return True
+    if category_group in ("문학", "에세이") and compact in _LIT_ABSTRACT_NOUNS:
+        return True
+    if category_group == "문학" and _LIT_DERIVED_COMPOUND_RE.match(compact):
+        return True
+    if category_group == "에세이" and _ESSAY_SENTIMENT_RE.match(compact):
+        return True
+    if _LOW_VALUE_SUFFIX_RE.search(compact):
+        return True
+    if re.search(r"[가-힣]{2,}[과와][가-힣]{2,}", compact):
+        return True
+    if _UI_CONNECTOR_RE.match(compact):
+        return True
+    if compact in _PURE_GENRE_LABELS:
+        return True
+    if re.fullmatch(r"[가-힣]", compact):
+        return True
+    return False
+
+
+# ── Few-shot 예시 DB ──────────────────────────────────────────────────────────
+_FEW_SHOTS_PATH = Path(__file__).parent / "few_shots_653.json"
+_FEW_SHOTS_CACHE: dict | None = None
+
+
+def _load_few_shots() -> dict:
+    global _FEW_SHOTS_CACHE
+    if _FEW_SHOTS_CACHE is None:
+        if _FEW_SHOTS_PATH.exists():
+            _FEW_SHOTS_CACHE = json.loads(_FEW_SHOTS_PATH.read_text(encoding="utf-8"))
+        else:
+            _FEW_SHOTS_CACHE = {}
+    return _FEW_SHOTS_CACHE
+
+
+def _build_few_shot_section(category_group: str, max_examples: int = 3) -> str:
+    shots = _load_few_shots().get(category_group, [])
+    if not shots:
+        return ""
+    lines = ["[참고 예시 — 유사 도서의 사서 작성 키워드]"]
+    for ex in shots[:max_examples]:
+        kw_str = " / ".join(ex["good_keywords"])
+        lines.append(f"  분류: {ex['category']}")
+        lines.append(f"  제목: {ex['title']}")
+        lines.append(f"  → 키워드: {kw_str}")
+        if ex.get("bad_keywords"):
+            bad_str = " / ".join(ex["bad_keywords"])
+            lines.append(f"  → 제외: {bad_str}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+# ── 정적 instructions (원본 그대로 이식) ───────────────────────────────────────
+_STATIC_INSTRUCTIONS = (
+    "KORMARC 653 자유주제어 전문가. 아래 원칙으로 $a키워드 형식 생성.\n\n"
+    "[4대 원칙]\n"
+    "1. 독립성: 제목·저자 단어 반복 금지. 하위개념 치환은 허용.\n"
+    "2. 구체성: 과학·인문학·역사 등 상위분류명 단독 금지. 구체 하위개념 추출.\n"
+    "   예) 자연과학→양자역학 / 인문학→실존주의 / 자기계발→시간관리\n"
+    "3. 목적성: 이용자가 검색창에 입력할 명사만. 감상어(따뜻한·감동적) 금지.\n"
+    "   판촉어(힐링·N잡러)는 검색효용 있으면 허용.\n"
+    "   사회적상황·정체성으로 치환: 위로→번아웃 / 성장→자존감\n"
+    "   출력 전 확인: 교보문고·예스24 검색창에 이 단어를 입력했을 때\n"
+    "   비슷한 분야의 책 여러 권이 모이는가?\n"
+    "   → 너무 좁으면(단일 사례·실험명) 제외 / 너무 넓으면(상위분류명 단독) 제외\n"
+    "   확신이 없으면 출력하지 말 것.\n"
+    "4. 시의성: 신조어·트렌드어 적극 허용. 예) LLM, N잡러, 챗GPT\n\n"
+    "[핵심 규칙]\n"
+    "- 주제어(책이 다루는 개념) 추출. 내용어(등장 사물·사례)는 주제어로 치환.\n"
+    "  예) 삼성전자→대기업전략 / 아버지→가족관계 / 신호등→도시교통\n"
+    "  예외: 기술서 도구명(파이썬·챗GPT·엑셀)은 그대로 허용.\n"
+    "- 제외: 과/와/의 결합어·동의어중복·단순장르명(소설·에세이)\n"
+    "- 제외: 한국·국내+문학장르(외국국가+장르는 허용)\n"
+    "- 제외: 추상접미어로 끝나는 단어(~사유·~성찰·~담론·~탐구)\n"
+    "- 배경키워드: 설명·목차 명시 내용에서만 추출. 추정 금지.\n"
+    "- 문학·에세이: 비평·서사이론형 메타표현 금지(서사구조·감정서사 등)\n\n"
+    "출력: $a키워드1 $a키워드2 ... 한 줄, 결과만. 예) $a번아웃 $a성장소설\n"
+    "정보가 부족하면 카테고리명 기반으로 추론 가능한 키워드만 출력할 것. "
+    "거절 메시지(I'm sorry, 죄송합니다, I cannot 등)는 절대 출력 금지."
+)
+
+
+def _build_input(
+    category: str,
+    title: str,
+    authors: str,
+    description: str,
+    toc: str,
+    max_keywords: int,
+    publisher_desc: str = "",
+    desc_max_chars: int = 600,
+    toc_max_chars: int = 300,
+    pub_desc_max_chars: int = 600,
+    content_code: str = "",
+) -> str:
+    """ISBN별 동적 입력 텍스트 생성."""
+    parts = [p.strip() for p in (category or "").split(">") if p.strip()]
+    cat_tail = " ".join(parts[-2:]) if len(parts) >= 2 else (parts[-1] if parts else "")
+    forbidden = _build_forbidden_set(title, authors)
+    forbidden_list = ", ".join(sorted(forbidden)) or "(없음)"
+    category_group = get_category_group(category, content_code)
+    category_prompt = get_category_prompt(category, content_code)
+    desc_trimmed = (description or "")[:desc_max_chars]
+    toc_trimmed = (toc or "")[:toc_max_chars]
+    pub_desc_trimmed = (publisher_desc or "")[:pub_desc_max_chars]
+
+    pub_section = f"- 출판사 제공 책소개: \"{pub_desc_trimmed}\"\n" if pub_desc_trimmed else ""
+    few_shot_section = _build_few_shot_section(category_group)
+    few_shot_block = f"{few_shot_section}\n" if few_shot_section else ""
+
+    return (
+        f"[카테고리 그룹: {category_group}]\n"
+        f"[카테고리별 지침]\n{category_prompt}\n"
+        f"{few_shot_block}"
+        f"### 분석 대상 도서\n"
+        f"- 분류(전체 체인): \"{category}\"\n"
+        f"- 분류(핵심 꼬리): \"{cat_tail}\"\n"
+        f"- 제목(245): \"{title}\"\n"
+        f"- 저자(100/700): \"{authors}\"\n"
+        f"- 설명: \"{desc_trimmed}\"\n"
+        f"- 목차: \"{toc_trimmed}\"\n"
+        f"{pub_section}"
+        f"- 제외어 목록: {forbidden_list}\n\n"
+        f"### 작업 지시 (내부적으로 3단계를 거쳐 최종 결과만 출력)\n"
+        f"1단계: 이 책의 핵심 주제 영역 2~3개를 파악한다.\n"
+        f"2단계: 각 주제 영역에서 이용자가 검색창에 입력할 구체 키워드를 추출하되, "
+        f"'내용어(책에 등장하는 사물·사례)'인지 '주제어(책이 다루는 개념)'인지 점검하고 내용어는 주제어로 치환한다.\n"
+        f"3단계: 카테고리별 지침의 필터 규칙을 적용해 최종 목록을 확정한다.\n\n"
+        f"출력: 최소 5개, 최대 {max_keywords}개"
+    )
+
+
+def _call_static_instructions_api(
+    input_text: str,
+    openai_client,
+    model: str,
+    max_output_tokens: int = 200,
+) -> str:
+    """
+    OpenAI Responses API 호출(동기). instructions=_STATIC_INSTRUCTIONS 방식으로
+    매 요청마다 지침을 직접 전송(OpenAI 자동 프롬프트 캐싱으로 반복 비용 절감).
+    """
+    resp = openai_client.responses.create(
+        model=model,
+        instructions=_STATIC_INSTRUCTIONS,
+        input=input_text,
+        max_output_tokens=max_output_tokens,
+    )
+    return (resp.output_text or "").strip()
+
+
+_REFUSAL_RE = re.compile(
+    r"i'?\s*m\s+sorry|i\s+cannot|i\s+can'?t|죄송|할\s*수\s*없|제공할\s*수",
+    re.IGNORECASE,
+)
+
+
+def _parse_keyword_line(raw: str) -> list[str]:
+    """GPT 응답에서 $a… 패턴(및 백업 파싱)으로 키워드 나열."""
+    pattern = re.compile(r"\$a(.*?)(?=(?:\$a|$))", re.DOTALL)
+    kws = [m.group(1).strip() for m in pattern.finditer(raw)]
+    if not kws:
+        tmp = re.split(r"[,\n;|/·]", raw)
+        kws = [t.strip().lstrip("$a") for t in tmp if t.strip()]
+    kws = [kw.replace(" ", "") for kw in kws if kw]
+    return kws
+
+
+def _extract_backup_candidates(category: str, toc: str, description: str) -> list[str]:
+    """GPT 결과가 부족할 때 보강 후보를 추출한다."""
+    text = " ".join([category or "", toc or "", description or ""])
+    tokens = re.findall(r"[가-힣A-Za-z]{2,12}", text)
+    deny = {
+        "목차", "차례", "서론", "결론", "저자", "작가", "소개", "연구", "방법", "이론", "문학",
+        "한국", "세계", "도서", "작품", "출판", "분석", "개요", "현황", "의의", "시사점",
+        "단순히", "구체적", "올바른", "작은", "변화", "모음", "상식", "추천",
+        "활기찬", "품격있는", "품격노년", "치과의사팁", "비결", "팁",
+        "오래", "사는", "아프지", "보내는",
+        "Part", "Chapter", "Vol", "Section", "Unit", "Lesson",
+        "내가", "그가", "우리가", "무엇인가", "어떻게",
+        "찾기", "하기", "되기", "쓰기",
+    }
+    out: list[str] = []
+    for t in tokens:
+        w = t.replace(" ", "")
+        if len(w) < 2 or len(w) > 10:
+            continue
+        if w in deny:
+            continue
+        if re.search(r"^[가-힣]{2,}는$", w):
+            continue
+        if re.search(r"^[가-힣]{3,}면$", w):
+            continue
+        out.append(w)
+    return out
+
+
+_GENRE_FALLBACKS: dict[str, list[str]] = {
+    "소설": ["현대소설", "장편소설"],
+    "시": ["현대시", "서정시"],
+    "에세이": ["에세이"],
+    "희곡": ["현대희곡"],
+    "동화": ["어린이문학"],
+    "만화": ["그래픽노블"],
+}
+
+
+def _extract_category_candidates(category: str, content_code: str = "") -> list[str]:
+    """분류 체인의 구체 하위 분야명을 보강 후보로 사용한다."""
+    category_group = get_category_group(category, content_code)
+    candidates: list[str] = []
+    for part in reversed([p.strip() for p in (category or "").split(">") if p.strip()]):
+        if "국립중앙도서관" in part or "kdc" in _norm_text(part):
+            continue
+        if "/" in part:
+            continue
+        token = re.sub(r'\([^)]*\)', '', part.replace(" ", "")).strip()
+        n = _norm_text(token).replace(" ", "")
+        if len(token) < 2 or len(token) > 10:
+            continue
+        if n in CATEGORY_CANDIDATE_DENY:
+            continue
+        if _is_low_value_keyword(n, category_group):
+            continue
+        candidates.append(token)
+
+    if not candidates:
+        parts = [p.strip() for p in category.split(">") if p.strip()]
+        for part in reversed(parts):
+            part_compact = part.replace(" ", "")
+            for genre, fallbacks in _GENRE_FALLBACKS.items():
+                if genre in part_compact:
+                    candidates.extend(fallbacks)
+                    break
+            if candidates:
+                break
+    return candidates
+
+
+def _finalize_653(
+    ai_output: str,
+    forbidden_set: set[str],
+    max_keywords: int = 7,
+    min_keywords: int = 5,
+    category: str = "",
+    toc: str = "",
+    description: str = "",
+    content_code: str = "",
+) -> tuple[str, dict]:
+    """AI 출력에서 금지어·저효용어를 제거하고 $a 형식과 품질 지표를 함께 반환."""
+    keywords = [k.strip() for k in ai_output.split("$a") if k.strip()]
+    ai_raw_count = len(keywords)
+
+    author_bio_like = {
+        "작가", "저자", "등단", "수상", "작품세계", "문단", "생애", "인터뷰", "연보", "약력",
+    }
+    cat_norm = _norm_text(category)
+    allow_bio = any(t in cat_norm for t in ("전기", "평전", "작가론", "인물", "회고록"))
+    category_group = get_category_group(category, content_code)
+
+    valid_keywords: list[str] = []
+    seen: set[str] = set()
+    for kw in keywords:
+        if _should_keep_keyword(kw, forbidden_set):
+            n = _norm_text(kw)
+            if _is_low_value_keyword(n, category_group):
+                continue
+            if not allow_bio and any(b in n for b in author_bio_like):
+                continue
+            if n in seen:
+                continue
+            seen.add(n)
+            valid_keywords.append(kw.replace(" ", ""))
+
+    ai_valid_count = len(valid_keywords)
+    filtered_count = ai_raw_count - ai_valid_count
+    backup_used = ai_valid_count == 0
+
+    if backup_used and category_group != "문학":
+        backup = _extract_backup_candidates(category, toc, description)
+        for kw in backup:
+            n = _norm_text(kw)
+            if n in seen:
+                continue
+            if _is_low_value_keyword(n, category_group):
+                continue
+            if not _should_keep_keyword(kw, forbidden_set):
+                continue
+            if not allow_bio and any(b in n for b in author_bio_like):
+                continue
+            seen.add(n)
+            valid_keywords.append(kw)
+            if len(valid_keywords) >= min_keywords:
+                break
+
+    count_before_fallback = len(valid_keywords)
+    if count_before_fallback < min_keywords:
+        for kw in _extract_category_candidates(category, content_code):
+            n = _norm_text(kw)
+            if n in seen:
+                continue
+            if _is_low_value_keyword(n, category_group):
+                continue
+            if not _should_keep_keyword(kw, forbidden_set):
+                continue
+            seen.add(n)
+            valid_keywords.append(kw)
+            if len(valid_keywords) >= min_keywords:
+                break
+    category_fallback_used = len(valid_keywords) > count_before_fallback
+
+    final_count = len(valid_keywords[:max_keywords])
+
+    flags: list[str] = []
+    if ai_raw_count < 3:
+        flags.append("AI생성부족")
+    filter_rate = filtered_count / ai_raw_count if ai_raw_count > 0 else 0.0
+    if filter_rate > 0.5:
+        flags.append("과다차단")
+    if backup_used:
+        flags.append("텍스트fallback사용")
+    if category_fallback_used:
+        flags.append("카테고리fallback사용")
+    if final_count < min_keywords:
+        flags.append("키워드부족")
+
+    score = min(final_count, max_keywords) / max(max_keywords, 1)
+    if filter_rate > 0.3:
+        score -= (filter_rate - 0.3) * 0.5
+    if backup_used:
+        score -= 0.15
+    if category_fallback_used:
+        score -= 0.10
+    score = round(max(0.0, min(1.0, score)), 3)
+
+    quality = {
+        "ai_raw_count": ai_raw_count,
+        "filtered_count": filtered_count,
+        "final_count": final_count,
+        "backup_used": backup_used,
+        "category_fallback_used": category_fallback_used,
+        "quality_score": score,
+        "flags": flags,
+    }
+    return "".join([f"$a{k}" for k in valid_keywords[:max_keywords]]), quality
+
+
+def build_marc_653_line(subfield_line: str) -> str:
+    """'$a..$a..' → MRK 한 줄("=653  \\\\" + 서브필드)."""
+    compact = subfield_line.replace(" ", "")
+    return f"=653  \\\\{compact}"
+
+
+# ═══════════════════════════════════════════════════════════════
+# 3. 알라딘 item → 653 메타데이터 조립
+# ═══════════════════════════════════════════════════════════════
+
+def _build_meta_from_item(item: dict) -> dict:
+    """
+    item(OPT_RESULT_FULL로 조회됨)에서 653에 필요한 필드만 추출한다.
+    원본 fetch_aladin_for_653()의 item 가공 부분과 동일한 로직
+    (알라딘 API 재호출 없이 041/245와 동일한 item을 공유).
+    """
+    sub = (item.get("subInfo") or {}) or {}
+    raw_author = item.get("author") or item.get("authors") or item.get("author_t") or ""
+    if isinstance(raw_author, list):
+        raw_author = " ".join(str(x) for x in raw_author)
+    raw_category = str(item.get("categoryName", "") or item.get("categoryText", "") or "")
+    raw_desc = str((item.get("fulldescription") or item.get("description") or "") or "")
+    raw_toc = str((item.get("toc") or sub.get("toc") or "") or "")
+    return {
+        "category": raw_category,
+        "title": str(item.get("title", "") or ""),
+        "authors": str(raw_author or ""),
+        "description": raw_desc,
+        "toc": raw_toc,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════
+# 4. 상위 오케스트레이터 — app.py가 호출하는 진입점
+# ═══════════════════════════════════════════════════════════════
+
+def build_653_field(
+    item: dict,
+    isbn: str,
+    *,
+    openai_client,
+    model: str = "gpt-4o",
+    max_keywords: int = 7,
+    min_keywords: int = 5,
+    kpipa_api_key: str = "",
+    kpipa_enable: bool = False,
+    nlk_cert_key: str = "",
+    nlk_enable: bool = False,
+) -> tuple[str | None, str | None]:
     """
     653 MRK 문자열을 반환한다.
-    (미구현 — 653/backend/app/ai_service.py의 finalize_653 파이프라인 이식 필요)
+
+    Args:
+        item: 알라딘 API item dict (api/aladin_client.OPT_RESULT_FULL로 조회된 것).
+        isbn: 알라딘 getContents.aspx 크롤링·KPIPA·NLK 조회에 쓰이는 ISBN-13.
+        openai_client: openai.OpenAI 동기 클라이언트(041/245와 동일하게 주입).
+        model: core.config.Settings.openai_model_653.
+        max_keywords/min_keywords: core.config.Settings.max_keywords_653/min_keywords_653.
+        kpipa_api_key/kpipa_enable: KPIPA ONIX 목차 보강(기본 비활성, 원본과 동일).
+        nlk_cert_key/nlk_enable: NLK 부가기호(content_code) 보강(기본 비활성, 원본과 동일).
+
+    Returns:
+        (tag_653_mrk, error) — 성공 시 error=None, 실패 시 tag=None.
     """
-    raise NotImplementedError(
-        "653/backend/app/ai_service.py의 18개 분야 프롬프트·필터링 파이프라인을 이식해야 합니다. "
-        "docs/INTEGRATION_SURVEY.md의 653 섹션을 참고하세요."
+    if not openai_client:
+        return None, "OPENAI_API_KEY가 설정되지 않았습니다."
+
+    meta = _build_meta_from_item(item)
+
+    # 알라딘 상세페이지 크롤링 — "출판사 제공 책소개"는 API에 없어 항상 수행(원본과 동일)
+    publisher_desc = ""
+    try:
+        crawled = crawl_aladin_publisher_intro_and_toc(isbn)
+        if not meta["description"].strip() and crawled.get("detail_description"):
+            meta["description"] = crawled["detail_description"]
+            dbg("[653] 알라딘 크롤링으로 책소개 보강:", len(meta["description"]), "자")
+        if not meta["toc"].strip() and crawled.get("toc"):
+            meta["toc"] = crawled["toc"]
+            dbg("[653] 알라딘 크롤링으로 목차 보강:", len(meta["toc"]), "자")
+        publisher_desc = crawled.get("publisher_desc", "")
+        if publisher_desc:
+            dbg("[653] 출판사 제공 책소개 수집됨:", len(publisher_desc), "자")
+    except Exception as e:
+        dbg_err(f"[653] 알라딘 상세페이지 크롤링 실패: {e}")
+
+    content_code = ""
+    if nlk_enable and nlk_cert_key:
+        try:
+            content_code = fetch_kdc_content_code_by_isbn(isbn, nlk_cert_key)
+            if content_code:
+                dbg(f"[653] NLK 부가기호 조회: content_code={content_code}")
+        except Exception as e:
+            dbg_err(f"[653] NLK 부가기호 조회 실패: {e}")
+
+    if kpipa_enable and kpipa_api_key:
+        try:
+            kpipa_raw, kpipa_err = get_kpipa_book_detail(isbn, kpipa_api_key)
+            if kpipa_err:
+                dbg(f"[653] KPIPA 조회 실패(무시): {kpipa_err}")
+            else:
+                kpipa_toc = extract_kpipa_toc_only(kpipa_raw)
+                if kpipa_toc:
+                    cleaned = _clean_toc_for_ai(kpipa_toc)
+                    if cleaned and cleaned not in meta["toc"]:
+                        meta["toc"] = f"{meta['toc']}\n{cleaned}".strip() if meta["toc"] else cleaned
+                        dbg("[653] KPIPA 목차 병합됨")
+        except Exception as e:
+            dbg_err(f"[653] KPIPA 조회 예외: {e}")
+
+    category = _clean_category_for_ai(meta["category"])
+    description = _clean_description_for_ai(meta["description"])
+    toc = _clean_toc_for_ai(meta["toc"])
+    authors = _clean_author_str(meta["authors"])
+    title = meta["title"]
+
+    category_group = get_category_group(category, content_code)
+    dbg(f"[653] 카테고리 그룹 판정: '{category}' → {category_group}"
+        + (f" (부가기호 {content_code} 보정)" if content_code else ""))
+
+    input_text = _build_input(
+        category, title, authors, description, toc, max_keywords,
+        publisher_desc=publisher_desc, content_code=content_code,
     )
+
+    try:
+        raw = _call_static_instructions_api(input_text, openai_client, model)
+    except Exception as e:
+        dbg_err(f"[653] OpenAI Responses API 호출 실패: {e}")
+        return None, f"OpenAI 653 호출 실패: {e}"
+
+    forbidden = _build_forbidden_set(title, authors)
+    if _REFUSAL_RE.search(raw or ""):
+        dbg("[653] AI 거절 응답 감지 → fallback 처리")
+        raw = ""
+    kws = _parse_keyword_line(raw)
+    ai_output = "".join(f"$a{kw}" for kw in kws if _should_keep_keyword(kw, forbidden))
+
+    effective_min = 3 if category_group == "문학" else min_keywords
+    subfield_line, quality = _finalize_653(
+        ai_output, forbidden,
+        max_keywords=max_keywords, min_keywords=effective_min,
+        category=category, toc=toc, description=description, content_code=content_code,
+    )
+    dbg(
+        f"[653] 품질: raw={quality['ai_raw_count']} filtered={quality['filtered_count']} "
+        f"final={quality['final_count']} score={quality['quality_score']} flags={quality['flags']}"
+    )
+
+    if not subfield_line:
+        return None, "유효한 키워드를 추출하지 못했습니다."
+
+    return build_marc_653_line(subfield_line), None

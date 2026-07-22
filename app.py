@@ -8,8 +8,9 @@ FastAPI 애플리케이션 진입점 — i2m_kormarc 통합 골격.
     (core/fields/marc_245.py, core/fields/marc_500_700_710.py).
   - 041(언어코드)/546(언어주기)은 041 폴더의 LangFieldBuilder를 이관해 실제로 동작한다
     (core/fields/marc_041.py).
-  - 653(자유주제어)은 core/fields/marc_653.py에 스텁만 있고 아직 호출하지 않는다.
-    아래 _run_conversion() 안에 TODO 주석으로 연결 지점을 표시해 두었다.
+  - 653(자유주제어)은 653 폴더의 ai_service.py(18개 분야별 GPT 프롬프트)를 이관해
+    실제로 동작한다(core/fields/marc_653.py). KPIPA/NLK 보강은 원본과 동일하게
+    기본 비활성(opt-in)이다.
 
 엔드포인트:
   POST /api/convert        — 단일 ISBN → MARC 변환
@@ -46,7 +47,7 @@ from api.publisher_db import build_pub_location_bundle
 from database.feedback_logger import init_db, save_feedback_record
 
 from core.fields.marc_041 import build_041_546, LangFieldBuilder
-# TODO(653 이식 시 주석 해제): from core.fields.marc_653 import build_653_field
+from core.fields.marc_653 import build_653_field
 
 logger = logging.getLogger("i2m_kormarc")
 
@@ -70,7 +71,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="I2M KORMARC 통합 변환 API",
-    description="알라딘·KPIPA·행안부·OpenAI를 활용한 KORMARC 자동 생성 백엔드 (653 제외 전 필드 실동작)",
+    description="알라딘·KPIPA·행안부·OpenAI를 활용한 KORMARC 자동 생성 백엔드 (전 필드 실동작)",
     version="0.1.0-skeleton",
     lifespan=lifespan,
 )
@@ -172,11 +173,7 @@ def _build_openai_client(settings: Settings) -> openai.OpenAI | None:
 
 def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
     """
-    단일 ISBN 변환 핵심 로직. 041/546/245/246/500/700/710/900/260/300을 생성한다.
-
-    653을 이식할 때는 아래 TODO 지점에 필드 빌더 호출을 추가하면 된다. 653은
-    async 함수이므로 이 함수 자체를 async def로 바꾸고 나머지 동기 호출부는
-    asyncio.to_thread(...)로 감싸야 한다(core/fields/marc_653.py 상단 docstring 참고).
+    단일 ISBN 변환 핵심 로직. 041/546/245/246/500/700/710/900/260/300/653을 생성한다.
     """
     try:
         isbn = req.isbn.strip().replace("-", "")
@@ -261,8 +258,19 @@ def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
         if f_300:
             builder.rec.add_field(f_300)
 
-        # TODO(653 이식 시): tag_653, err_653 = await build_653_field(item, secrets=secrets, openai_client=openai_client)
-        # TODO(653 이식 시): _add(tag_653) if not err_653 else None
+        # ── 653 ──────────────────────────────────────────────
+        tag_653, err_653 = build_653_field(
+            item, isbn,
+            openai_client=openai_client,
+            model=settings.openai_model_653,
+            max_keywords=settings.max_keywords_653,
+            min_keywords=settings.min_keywords_653,
+            kpipa_api_key=secrets.get("KPIPA_API_KEY", ""),
+            kpipa_enable=settings.kpipa_enable_653,
+            nlk_cert_key=secrets.get("NLK_CERT_KEY", ""),
+            nlk_enable=settings.nlk_enable_653,
+        )
+        _add(tag_653)  # 실패 사유는 build_653_field 내부에서 이미 [653] 디버그 로그로 남긴다
 
         mrk_text = "\n".join(filter(None, all_tags))
         marc_bytes = builder.rec.as_marc()
@@ -277,6 +285,7 @@ def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
             "tag_546": tag_546 or "",
             "tag_260": tag_260 or "",
             "tag_300": tag_300 or "",
+            "tag_653": tag_653 or "",
             "category_id":   (item or {}).get("categoryId", ""),
             "category_name": (item or {}).get("categoryName", ""),
             "toc_text": illus_diag.get("toc_text", ""),
@@ -313,7 +322,7 @@ async def health():
 
 @app.post("/api/convert", response_model=ConvertResult, tags=["MARC 변환"])
 async def convert_single(req: ConvertRequest):
-    """단일 ISBN을 MARC 레코드로 변환한다. (041/546/245/246/500/700/710/900/940/260/300 생성, 653 제외)"""
+    """단일 ISBN을 MARC 레코드로 변환한다. (041/546/245/246/500/700/710/900/940/260/300/653 생성)"""
     secrets = _settings_to_secrets(get_settings())
     result = _run_conversion(req, secrets)
     if result.error:

@@ -1450,3 +1450,153 @@ class AladinAuthorScraper:
                 return web_bio.strip()
 
         return ""
+
+
+# ═══════════════════════════════════════════════════════════════
+# 653(자유주제어)용 — 알라딘 상세페이지 책소개/목차/출판사 제공 책소개 크롤링
+# ═══════════════════════════════════════════════════════════════
+# 원본: 653/backend/app/aladin_client.py의 _crawl_aladin_detail 등(httpx.AsyncClient
+# 기반 async 버전). i2m_kormarc는 이 파일의 다른 크롤링 함수들처럼 동기(requests)로
+# 이식했다 — app.py 오케스트레이터를 통째로 async로 바꾸지 않기 위함(041/245/260/300과
+# 동일한 호출 스타일 유지).
+#
+# 원본은 알라딘 API가 "출판사 제공 책소개"를 주지 않으므로 이 크롤링을 항상(무조건)
+# 수행했다 — 여기서도 동일하게 조건 없이 호출한다.
+
+_ALADIN_GET_CONTENTS_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "X-Requested-With": "XMLHttpRequest",
+}
+
+
+def _isbn13_to_isbn10_for_contents(isbn13: str) -> str:
+    """ISBN13 → 알라딘 getContents.aspx URL용 ID 변환(978 접두만 ISBN-10 변환 가능)."""
+    s = (isbn13 or "").strip().replace("-", "")
+    if len(s) != 13:
+        return s[:10] if len(s) >= 10 else s
+    if s.startswith("979"):
+        return s
+    if not s.startswith("978"):
+        return s[:10] if len(s) >= 10 else s
+    core = s[3:12]
+    check_val = (11 - (sum((10 - i) * int(d) for i, d in enumerate(core)) % 11)) % 11
+    return core + ("X" if check_val == 10 else str(check_val))
+
+
+def _parse_aladin_section_html(html_text: str) -> str:
+    """알라딘 getContents.aspx HTML 응답 → 정제된 텍스트."""
+    if not html_text or len(html_text) < 10:
+        return ""
+    try:
+        soup = BeautifulSoup(html_text, "html.parser")
+        for tag in soup(["script", "style", "link"]):
+            tag.decompose()
+        text = soup.get_text(separator="\n", strip=True)
+        return re.sub(r"\n{3,}", "\n\n", text)
+    except Exception:
+        return ""
+
+
+def _extract_introduce_body(text: str) -> tuple[str, str]:
+    """Introduce 섹션 텍스트에서 (책소개 본문, 목차 텍스트) 분리."""
+    if not text:
+        return "", ""
+    lines = text.splitlines()
+    header_skip = {"책소개", "목차"}
+    desc_lines: list[str] = []
+    toc_lines: list[str] = []
+    in_toc = False
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped in header_skip:
+            if stripped == "목차":
+                in_toc = True
+            continue
+        if in_toc:
+            toc_lines.append(stripped)
+        else:
+            desc_lines.append(stripped)
+    return "\n".join(desc_lines), "\n".join(toc_lines)
+
+
+def _extract_publisher_book_intro(text: str) -> str:
+    """PublisherDesc 섹션에서 '출판사 제공 책소개' 본문만 추출(메타·중복 라인 제거)."""
+    if not text:
+        return ""
+    lines = text.splitlines()
+    marker = "출판사 제공 책소개"
+    skip_after = {"출판사 제공", "책소개", "더보기", marker}
+    start_idx = None
+    for i, line in enumerate(lines):
+        if line.strip() == marker:
+            start_idx = i + 1
+            break
+    if start_idx is None:
+        return ""
+    content_lines: list[str] = []
+    seen: set[str] = set()
+    for line in lines[start_idx:]:
+        stripped = line.strip()
+        if not stripped or stripped in skip_after or stripped in seen:
+            continue
+        seen.add(stripped)
+        content_lines.append(stripped)
+    return "\n".join(content_lines)
+
+
+def crawl_aladin_publisher_intro_and_toc(isbn13: str) -> dict[str, str]:
+    """
+    알라딘 상세페이지 3개 섹션(Introduce/Toc/PublisherDesc)을 getContents.aspx
+    직접 호출로 수집한다. 로그인·쿠키·Playwright 불필요.
+
+    Returns:
+        {"detail_description": str, "toc": str, "publisher_desc": str} —
+        수집되지 않은 항목은 키 자체가 없음.
+    """
+    result: dict[str, str] = {}
+    isbn10 = _isbn13_to_isbn10_for_contents(isbn13)
+    headers = {
+        **_ALADIN_GET_CONTENTS_HEADERS,
+        "Referer": f"https://www.aladin.co.kr/shop/wproduct.aspx?ISBN={isbn10}",
+    }
+
+    def _get(name: str) -> str:
+        url = (
+            f"https://www.aladin.co.kr/shop/product/getContents.aspx"
+            f"?ISBN={isbn10}&name={name}&type=0"
+        )
+        try:
+            resp = requests.get(url, headers=headers, timeout=10.0)
+            resp.raise_for_status()
+            return _parse_aladin_section_html(resp.text)
+        except Exception:
+            return ""
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {
+            name: executor.submit(_get, name)
+            for name in ("Introduce", "Toc", "PublisherDesc")
+        }
+        introduce_text = futures["Introduce"].result()
+        toc_text = futures["Toc"].result()
+        publisher_text = futures["PublisherDesc"].result()
+
+    intro_desc, intro_toc = _extract_introduce_body(introduce_text)
+    if intro_desc:
+        result["detail_description"] = intro_desc[:1500]
+
+    if toc_text.strip():
+        result["toc"] = toc_text[:800]
+    elif intro_toc:
+        result["toc"] = intro_toc[:400]
+
+    pub_desc = _extract_publisher_book_intro(publisher_text)
+    if pub_desc:
+        result["publisher_desc"] = pub_desc[:1500]
+
+    return result
