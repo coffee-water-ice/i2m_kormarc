@@ -43,6 +43,7 @@ import unicodedata
 from pathlib import Path
 
 from core.debug_log import dbg, dbg_err
+from core import token_tracker
 from api.aladin_scraper import crawl_aladin_publisher_intro_and_toc
 from api.kpipa_client import get_kpipa_book_detail, extract_kpipa_toc_only
 from api.nlk_client import fetch_kdc_content_code_by_isbn
@@ -921,6 +922,8 @@ def _call_static_instructions_api(
         input=input_text,
         max_output_tokens=max_output_tokens,
     )
+    if resp.usage:
+        token_tracker.add(resp.usage.input_tokens, resp.usage.output_tokens)
     return (resp.output_text or "").strip()
 
 

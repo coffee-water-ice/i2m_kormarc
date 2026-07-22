@@ -25,6 +25,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -36,6 +37,7 @@ from pydantic import BaseModel, Field
 # 내부 모듈 — 새 골격 경로
 from core.config import Settings, get_settings, load_streamlit_secrets_into_env
 from core.debug_log import clear_debug_lines, get_debug_lines
+from core import token_tracker
 from core.marc_builder import MarcBuilder, kormarc_tag_to_mrk, mrk_str_to_field
 from core.fields.marc_260 import build_260_field
 from core.fields.marc_300 import build_300_field
@@ -175,6 +177,8 @@ def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
     """
     단일 ISBN 변환 핵심 로직. 041/546/245/246/500/700/710/900/260/300/653을 생성한다.
     """
+    start_time = time.perf_counter()
+    token_tracker.clear()
     try:
         isbn = req.isbn.strip().replace("-", "")
         item, aladin_err = get_aladin_item_by_isbn(isbn, secrets)
@@ -296,8 +300,11 @@ def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
             "orig_author_en": f245_ctx.get("orig_author_en", ""),
             "translation_book": f245_ctx.get("translation_book", False),
             "debug_lines": bundle.get("debug", []) + get_debug_lines(),
+            "elapsed_ms": round((time.perf_counter() - start_time) * 1000),
+            "token_usage": token_tracker.get_total(),
         }
         clear_debug_lines()
+        token_tracker.clear()
 
         return ConvertResult(
             isbn=isbn,

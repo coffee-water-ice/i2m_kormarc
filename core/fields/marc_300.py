@@ -21,6 +21,7 @@ from bs4 import BeautifulSoup
 from pymarc import Field, Subfield
 
 from core.debug_log import dbg, dbg_err
+from core import token_tracker
 
 
 # 삽화 키워드 매핑 (KORMARC 용어 → 감지 키워드)
@@ -189,6 +190,8 @@ def _detect_illustrations_with_ai(
             temperature=0,
             timeout=15,
         )
+        if resp.usage:
+            token_tracker.add(resp.usage.prompt_tokens, resp.usage.completion_tokens)
         data   = _json.loads(resp.choices[0].message.content)
         items  = [str(i) for i in data.get("items", []) if i]
         reason = data.get("reason", "")

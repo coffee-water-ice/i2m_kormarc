@@ -32,6 +32,7 @@ from core.text_utils import (
     remove_year,
     to_title_case,
 )
+from core import token_tracker
 
 ALADIN_SEARCH_URL = "http://www.aladin.co.kr/ttb/api/ItemSearch.aspx"
 ALADIN_HEADERS = {
@@ -1038,6 +1039,8 @@ def gpt_orig_info_lookup(
             if use_web_search:
                 kwargs["tools"] = [{"type": "web_search_preview"}]
             response = openai_client.responses.create(**kwargs)
+            if response.usage:
+                token_tracker.add(response.usage.input_tokens, response.usage.output_tokens)
             text = (response.output_text or "").strip()
             text = re.sub(r"^```json\s*", "", text)
             text = re.sub(r"\s*```$", "", text).strip()

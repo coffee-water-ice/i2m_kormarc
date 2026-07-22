@@ -117,6 +117,13 @@ with tab_single:
             st.success("변환 완료")
             meta = result.get("meta", {})
 
+            # ── 소요시간 · 토큰 사용량 (간단히 한 줄로) ──────────────
+            elapsed_ms = meta.get("elapsed_ms")
+            token_usage = meta.get("token_usage") or {}
+            total_tokens = token_usage.get("total_tokens", 0)
+            if elapsed_ms is not None:
+                st.caption(f"⏱️ 소요시간 **{elapsed_ms / 1000:.1f}초**  ·  🔢 GPT 토큰 **{total_tokens:,}개**")
+
             # ── 직접 수정 파트 (별도 이름 없이, 태그 오름차순 정렬 상태로 표시) ──
             sorted_mrk = _sort_mrk_lines(result.get("mrk_text", ""))
             seq = st.session_state.get("single_result_seq", 0)
