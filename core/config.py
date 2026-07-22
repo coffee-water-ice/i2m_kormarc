@@ -22,7 +22,11 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _ROOT_DIR = Path(__file__).resolve().parents[1]
-_ENV_FILE = _ROOT_DIR / ".env"
+# 로컬 개발용 실제 키는 저장소 바깥(부모 폴더)의 i2m_2026.env에 둔다.
+# git 저장소(i2m_kormarc/) 밖에 있어 .gitignore와 무관하게 커밋될 수 없다.
+# Render/Streamlit Cloud 등 배포 환경에는 이 파일이 없고 환경변수를 직접 주입하므로
+# 존재하지 않아도(pydantic-settings가 조용히 무시) 문제가 없다.
+_ENV_FILE = _ROOT_DIR.parent / "i2m_2026.env"
 _SECRETS_TOML = _ROOT_DIR / ".streamlit" / "secrets.toml"
 
 

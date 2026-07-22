@@ -6,9 +6,10 @@
 
 ## 현재 상태
 
-- **실제로 동작함**: 245/246/500/700/710/900/940(245 폴더 이관), 260/300(260+300 폴더 이관).
-- **스텁만 있음(호출 안 함)**: 041(언어코드/546), 653(자유주제어).
-  `core/fields/marc_041.py`, `core/fields/marc_653.py`, `api/nlk_client.fetch_kdc_content_code_by_isbn`에
+- **실제로 동작함**: 041(언어코드/546, 041 폴더 이관), 245/246/500/700/710/900/940(245 폴더 이관),
+  260/300(260+300 폴더 이관).
+- **스텁만 있음(호출 안 함)**: 653(자유주제어).
+  `core/fields/marc_653.py`, `api/nlk_client.fetch_kdc_content_code_by_isbn`에
   이식 대상 함수 시그니처와 원본 파일 경로가 docstring/TODO로 명시되어 있다.
 
 ## 설치 및 실행
@@ -17,9 +18,15 @@
 python -m venv .venv
 .venv\Scripts\activate          # Windows
 pip install -r requirements.txt
+```
 
-cp .env.example .env            # 값 채우기 (알라딘/OpenAI/KPIPA/행안부/NLK/GSPREAD 키)
+로컬 실행에 필요한 실제 키(알라딘/OpenAI/KPIPA/행안부/NLK/GSPREAD)는 `.env.example`을
+참고해 이 저장소 **바깥**(부모 폴더, `i2m_kormarc/`와 같은 위치가 아니라 그 한 단계 위)에
+`i2m_2026.env` 파일로 채워 넣는다(`core/config.py`의 `_ENV_FILE` 경로 참고). 저장소 바깥에
+두므로 실수로 git에 커밋될 일이 없다. Render/Streamlit Cloud 등 배포 환경은 이 파일 없이
+대시보드에 등록된 환경변수/secrets.toml을 그대로 쓴다.
 
+```bash
 # 백엔드
 uvicorn app:app --reload        # http://127.0.0.1:8000/health
 
