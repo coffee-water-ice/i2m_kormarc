@@ -17,13 +17,30 @@
 | P9 | **각 필드 모듈은 "행 자체 완결(row-complete)" 원칙을 따른다**: `core/fields/marc_XXX.py`는 자기 필드 생성에만 책임지고, `(tag_str, pymarc.Field\|None, meta_dict)` 형태로만 반환한다. 다른 필드 모듈이나 app.py의 오케스트레이터를 import하지 않는다. | 이미 260+300의 `build_260_field`/`build_300_field`가 이 형태이고, 041의 `get_kormarc_tags`도 비슷한 반환 형태라 통일 비용이 낮다. 예외: 245는 245/246/500/700/710/900이 `authors`/`orig_title`을 강하게 공유하므로, 표제 계열(`marc_245.py`)과 책임표시 계열(`marc_500_700_710.py`) 2개 파일로 묶는 것만 허용한다. |
 | P10 | **레거시 잔재(zip 해제 흔적, 가상환경, 캐시, flatten 이전 흔적 등)는 신규 저장소로 옮기지 않는다.** 삭제 시에는 반드시 원문을 기록으로 남긴다. | `245/__MACOSX`, `245/245/.DS_Store`(zip 해제 잔재), `260+300/.venv`(가상환경, 절대 복사 금지), `260+300/backend_fastapi/`(flatten 이전 흔적) 등. 2026-07-08 정리 작업에서 260+300의 죽은 함수 3개를 삭제하며 `unnecessary/정리_기록_2026-07-08.md`에 원문을 보존한 것이 이 원칙의 실례다. |
 | P11 | **영속 계층은 `database/`로 일원화하되, 260+300의 `feedback_logger.py` 스키마(`field_tag` 컬럼)를 그대로 재사용한다.** | `field_tag`가 이미 문자열이라 `"300"`, `"041"`, `"653"` 등 어떤 태그든 스키마 변경 없이 저장 가능하다. `653/sheets_service.py`(골든데이터)와 260+300의 `load_publisher_db`(출판사 DB)는 같은 Google Sheets 인증 정보를 쓰므로 인증 초기화 코드를 공유해야 한다. |
+| P12 | **GPT 토큰 사용량도 디버그 로깅(P7)과 동일한 패턴으로 집계한다**: `core/token_tracker.py`가 `core/debug_log.py`와 같은 모듈 전역 카운터 구조를 쓰고, `app.py`가 변환 1건마다 clear/get한다. | 041/245/300/653 6개 GPT 호출 지점이 각자 `resp.usage`를 흘려버리고 있어 변환 1건당 실제 비용을 알 수 없었다. 041/653 이식 때 `[041]`/`[653]` prefix로 `dbg()`를 재사용한 것과 같은 이유로, 새 카운터도 기존 `debug_lines` 파이프라인과 나란히 두어 `meta.token_usage`/`meta.elapsed_ms`로 노출한다. |
 
 ## 알라딘/OpenAI 이외의 부수 이슈 (통합 시 함께 처리)
 
-- **동기/비동기 혼용**: 653은 `async def` + `httpx.AsyncClient` 기반이고 041/245/260+300은
-  동기 함수다. 653을 실제 로직으로 이식할 때 `app.py`의 오케스트레이터를 `async def`로
-  바꾸고, 나머지 동기 호출부는 `asyncio.to_thread(...)`로 감싸야 한다
-  (`core/fields/marc_653.py` 상단 docstring 참고).
+- **동기/비동기 혼용 — 실제로는 app.py를 async로 바꾸지 않고 해결함**: 653은 원본이
+  `async def` + `httpx.AsyncClient` + `AsyncOpenAI`(Responses API) 기반이었다.
+  착수 전에는 이식 시 `app.py`의 오케스트레이터를 `async def`로 바꾸고 041/245/260/300의
+  동기 호출부를 `asyncio.to_thread(...)`로 감싸는 방안을 예상했지만, 실제로는 openai
+  파이썬 SDK가 동기 클라이언트(`openai.OpenAI`)에서도 `.responses.create()`를 그대로
+  지원한다는 점을 활용해 653만 동기 호출로 이식했다(`core/fields/marc_653.py`의
+  `_call_static_instructions_api`). 알라딘 상세페이지 크롤링(`httpx`)·KPIPA·NLK 조회도
+  같은 이유로 `requests` 동기판으로 이식했다. 결과적으로 `app.py`는 여전히 전부 동기
+  함수이고, 041/245/653/260/300 모두 같은 호출 방식으로 순차 실행된다 — P2(OpenAI 호출
+  스타일 강제 통일 금지)는 유지하되(Responses API 자체는 바꾸지 않음), 동기/비동기
+  전송 방식은 결과적으로 통일됐다.
 - **보안**: 245의 알라딘 키 하드코딩 기본값, `260+300/.streamlit/secrets.toml`에
   남아있던 실제 자격증명 원문은 이 통합 작업과 별개로 사용자가 직접 폐기/재발급해야
   한다(코드 구조 통합으로 해결되는 문제가 아님).
+- **653의 부가 보강(KPIPA 목차·NLK 부가기호)은 기본 비활성으로 이식**: 원본
+  653/backend/app/config.py도 `kpipa_enable`/`nlk_enable` 기본값이 `False`였다 —
+  이식 후에도 `core.config.Settings.kpipa_enable_653`/`nlk_enable_653` 기본값을
+  동일하게 `False`로 유지해 opt-in 성격을 그대로 보존했다(P8 스타일 통일과 별개로,
+  원본의 "기본 동작"까지 바꾸지 않는다는 원칙을 041/653 이식에 공통 적용).
+- **653의 ISBN TTL 캐시·Google Sheets 골든데이터 저장은 이식하지 않음**: 전자는
+  041/245/260/300 어떤 필드 모듈도 쓰지 않는 캐시 계층이라 일관성이 깨지고, 후자는
+  이미 범용적인 `database/feedback_logger.py`(P11)가 `field_tag="653"`으로 동일한
+  역할(사서 최종 수정값 기록)을 하므로 별도 저장 경로를 새로 두지 않았다.

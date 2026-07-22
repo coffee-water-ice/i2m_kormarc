@@ -117,22 +117,29 @@ with tab_single:
             st.success("변환 완료")
             meta = result.get("meta", {})
 
-            # ── 소요시간 · 토큰 사용량 (간단히 한 줄로) ──────────────
+            # ── 소요시간 · 토큰 사용량 (간단히 한 줄로, 기본 캡션보다 1.2배 크게) ──
+            # st.caption은 모든 caption에 공통 스타일이 적용돼 이 줄만 선택적으로
+            # 키울 수 없어서, 캡션과 비슷한 회색조 텍스트를 markdown으로 직접 렌더링한다.
             elapsed_ms = meta.get("elapsed_ms")
             token_usage = meta.get("token_usage") or {}
             total_tokens = token_usage.get("total_tokens", 0)
             if elapsed_ms is not None:
-                st.caption(f"⏱️ 소요시간 **{elapsed_ms / 1000:.1f}초**  ·  🔢 GPT 토큰 **{total_tokens:,}개**")
+                st.markdown(
+                    f'<p style="font-size:1.2em; color:gray; margin:0 0 0.5rem 0;">'
+                    f"⏱️ 소요시간 <b>{elapsed_ms / 1000:.1f}초</b>"
+                    f"  ·  🔢 GPT 토큰 <b>{total_tokens:,}개</b></p>",
+                    unsafe_allow_html=True,
+                )
 
             # ── 직접 수정 파트 (별도 이름 없이, 태그 오름차순 정렬 상태로 표시) ──
-            # 기본 글자 크기가 너무 작다는 피드백에 따라 이 textarea만 1.5배로 키운다
+            # 기본 글자 크기가 너무 작다는 피드백에 따라 이 textarea만 1.3배로 키운다
             # (aria-label로 범위를 좁혀 일괄 변환 탭의 ISBN 목록 textarea는 영향받지 않는다).
             st.markdown(
                 """
                 <style>
                 textarea[aria-label="MRK 직접 수정"] {
-                    font-size: 1.5em !important;
-                    line-height: 1.5 !important;
+                    font-size: 1.3em !important;
+                    line-height: 1.4 !important;
                 }
                 </style>
                 """,

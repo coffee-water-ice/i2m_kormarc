@@ -6,11 +6,18 @@
 
 ## 현재 상태
 
-- **실제로 동작함**: 041(언어코드/546, 041 폴더 이관), 245/246/500/700/710/900/940(245 폴더 이관),
-  260/300(260+300 폴더 이관).
-- **스텁만 있음(호출 안 함)**: 653(자유주제어).
-  `core/fields/marc_653.py`, `api/nlk_client.fetch_kdc_content_code_by_isbn`에
-  이식 대상 함수 시그니처와 원본 파일 경로가 docstring/TODO로 명시되어 있다.
+041/245/653/260+300 4개 폴더 통합이 모두 끝나 전 필드가 실제로 동작한다.
+
+- **041**(언어코드/546) — 041 폴더의 `LangFieldBuilder` 이관 (`core/fields/marc_041.py`)
+- **245/246/500/700/710/900/940** — 245 폴더 이관 (`core/fields/marc_245.py`, `marc_500_700_710.py`)
+- **260/300**(발행사항/형태사항) — 260+300 폴더 이관 (`core/fields/marc_260.py`, `marc_300.py`)
+- **653**(자유주제어) — 653 폴더의 `ai_service.py`(18개 분야별 GPT 프롬프트 + 키워드
+  필터링 파이프라인) 이관 (`core/fields/marc_653.py`). 알라딘 상세페이지 크롤링·KPIPA
+  ONIX 목차·NLK 부가기호 보강도 함께 이식했으며, KPIPA/NLK 보강은 원본과 동일하게
+  기본 비활성(opt-in, `core.config.Settings.kpipa_enable_653`/`nlk_enable_653`)이다.
+
+부가 기능으로 변환 1건당 소요시간(`meta.elapsed_ms`)과 OpenAI 토큰 사용량
+(`meta.token_usage`)을 집계해 Streamlit 화면에 표시한다(`core/token_tracker.py`).
 
 ## 설치 및 실행
 
@@ -45,34 +52,39 @@ i2m_kormarc/
 ├── api_client.py                # 프론트 → 백엔드 HTTP 클라이언트
 ├── core/
 │   ├── config.py                # pydantic-settings 통합 설정
-│   ├── debug_log.py             # 필드 공용 디버그 로거
+│   ├── debug_log.py             # 필드 공용 디버그 로거 (meta.debug_lines)
+│   ├── token_tracker.py         # 필드 공용 OpenAI 토큰 카운터 (meta.token_usage)
 │   ├── marc_builder.py          # pymarc.Record ↔ MRK 변환 (kormarc_tag_to_mrk 어댑터 포함)
 │   ├── text_utils.py            # 245 계열 공용 텍스트/이름 유틸 (leaf 모듈, 순환참조 방지)
 │   ├── fields/
-│   │   ├── marc_041.py          # STUB
+│   │   ├── marc_041.py          # 실동작 (041/546, LangFieldBuilder)
 │   │   ├── marc_245.py          # 실동작 (245/246/940 + collect_orig_info)
 │   │   ├── marc_500_700_710.py  # 실동작 (500/700/710/900)
 │   │   ├── marc_260.py          # 실동작
 │   │   ├── marc_300.py          # 실동작
-│   │   └── marc_653.py          # STUB
+│   │   ├── marc_653.py          # 실동작 (653, 18개 분야별 GPT 프롬프트 + 키워드 필터링)
+│   │   └── few_shots_653.json   # 653 GPT 프롬프트용 few-shot 예시 데이터
 │   └── name_data/               # 실동작 (245 이름판별 데이터: 한국/일본 성씨, 출생신고 이름 통계)
 ├── api/
 │   ├── aladin_client.py         # 실동작 (OPT_RESULT_FULL)
-│   ├── aladin_scraper.py        # 실동작 (상품페이지 크롤링 + GPT 원제/원저자 웹 검색)
-│   ├── nlk_client.py            # 실동작 (245 원서명/원저자명 폴백) + 653용 함수는 STUB
-│   ├── kpipa_client.py          # 실동작
+│   ├── aladin_scraper.py        # 실동작 (상품페이지·저자프로필 크롤링, GPT 원제/원저자 웹 검색,
+│   │                             #          653용 getContents.aspx 책소개/목차 크롤링)
+│   ├── nlk_client.py            # 실동작 (245 원서명/원저자명 폴백 + 653 부가기호 content_code)
+│   ├── kpipa_client.py          # 실동작 (출판사명 조회 + 653 ONIX 목차 추출)
 │   ├── mois_client.py           # 실동작
 │   ├── publisher_db.py          # 실동작 (build_pub_location_bundle)
 │   └── openai_client.py         # 실동작 (클라이언트 팩토리만)
 ├── database/
-│   └── feedback_logger.py       # 실동작 (SQLite)
+│   └── feedback_logger.py       # 실동작 (SQLite, field_tag로 041~653 전 필드 공용)
 └── docs/
     ├── INTEGRATION_SURVEY.md
     └── INTEGRATION_PRINCIPLES.md
 ```
 
-## 다음 단계 (이식 순서 제안)
+## 향후 개선 아이디어 (필수 아님)
 
-1. 041 편입 → `core/fields/marc_041.py`, `api/aladin_scraper.scrape_author_bio`
-2. 653 편입 → `core/fields/marc_653.py` (app.py를 async로 전환 필요), `api/nlk_client.fetch_kdc_content_code_by_isbn`
-3. `app.py`의 TODO 주석 지점에 041/653 필드 호출 연결, `streamlit_app.py`/`pages/` UI 확장
+- 653의 KPIPA/NLK 보강(`kpipa_enable_653`/`nlk_enable_653`)은 원본처럼 기본
+  비활성 상태다 — 실제로 카테고리 라우팅 정확도가 아쉬운 경우에만 켜서 검증할 것.
+- `core/fields/marc_300.py`는 알라딘 상세 페이지 HTTP 요청을 `api/aladin_scraper.py`를
+  거치지 않고 직접 수행한다(원본 구조를 그대로 이관한 레이어링 잔재) — 크롤링
+  일원화 리팩터링은 별도 작업으로 남겨둔다.
