@@ -3,8 +3,8 @@ core/config.py
 통합 설정 — 653 폴더의 pydantic-settings 패턴(INTEGRATION_PRINCIPLES.md #4)을
 전체 표준으로 채택하고, 041/245/260/300/653 5개 필드가 필요로 하는 키를 모두 선언한다.
 
-041/245/653은 아직 스텁이라 해당 키들은 기본값("")만 채워둔 상태이며, 이후 각 필드를
-실제 로직으로 이식할 때 값을 채우면 코드 변경 없이 바로 동작한다.
+653은 아직 스텁이라 해당 키들은 기본값("")만 채워둔 상태이며, 실제 로직으로
+이식할 때 값을 채우면 코드 변경 없이 바로 동작한다.
 
 Streamlit Cloud처럼 .env 파일이 없는 배포 환경을 위해, load_streamlit_secrets_into_env()로
 .streamlit/secrets.toml → os.environ 브릿지를 제공한다(pydantic-settings 앞단의

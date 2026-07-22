@@ -70,7 +70,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="I2M KORMARC 통합 변환 API",
-    description="알라딘·KPIPA·행안부·OpenAI를 활용한 KORMARC 자동 생성 백엔드 (골격 단계: 260/300만 실동작)",
+    description="알라딘·KPIPA·행안부·OpenAI를 활용한 KORMARC 자동 생성 백엔드 (653 제외 전 필드 실동작)",
     version="0.1.0-skeleton",
     lifespan=lifespan,
 )
@@ -313,7 +313,7 @@ async def health():
 
 @app.post("/api/convert", response_model=ConvertResult, tags=["MARC 변환"])
 async def convert_single(req: ConvertRequest):
-    """단일 ISBN을 MARC 레코드로 변환한다. (골격 단계: 260/300만 생성)"""
+    """단일 ISBN을 MARC 레코드로 변환한다. (041/546/245/246/500/700/710/900/940/260/300 생성, 653 제외)"""
     secrets = _settings_to_secrets(get_settings())
     result = _run_conversion(req, secrets)
     if result.error:
