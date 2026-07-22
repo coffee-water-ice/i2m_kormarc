@@ -6,7 +6,9 @@ FastAPI 애플리케이션 진입점 — i2m_kormarc 통합 골격.
   - 260(발행사항)/300(형태사항)은 260+300 폴더의 로직을 그대로 이관해 실제로 동작한다.
   - 245/246/500/700/710/900은 245 폴더의 로직을 이관해 실제로 동작한다
     (core/fields/marc_245.py, core/fields/marc_500_700_710.py).
-  - 041(언어코드/546)·653(자유주제어)은 core/fields/*.py에 스텁만 있고 아직 호출하지 않는다.
+  - 041(언어코드)/546(언어주기)은 041 폴더의 LangFieldBuilder를 이관해 실제로 동작한다
+    (core/fields/marc_041.py).
+  - 653(자유주제어)은 core/fields/marc_653.py에 스텁만 있고 아직 호출하지 않는다.
     아래 _run_conversion() 안에 TODO 주석으로 연결 지점을 표시해 두었다.
 
 엔드포인트:
@@ -43,7 +45,7 @@ from api.kpipa_client import get_kpipa_book_detail
 from api.publisher_db import build_pub_location_bundle
 from database.feedback_logger import init_db, save_feedback_record
 
-# TODO(041 이식 시 주석 해제): from core.fields.marc_041 import build_041_546
+from core.fields.marc_041 import build_041_546, LangFieldBuilder
 # TODO(653 이식 시 주석 해제): from core.fields.marc_653 import build_653_field
 
 logger = logging.getLogger("i2m_kormarc")
@@ -170,9 +172,9 @@ def _build_openai_client(settings: Settings) -> openai.OpenAI | None:
 
 def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
     """
-    단일 ISBN 변환 핵심 로직. 260/300/245/246/500/700/710/900을 생성한다.
+    단일 ISBN 변환 핵심 로직. 041/546/245/246/500/700/710/900/260/300을 생성한다.
 
-    041/653을 이식할 때는 아래 TODO 지점에 필드 빌더 호출을 추가하면 된다. 653은
+    653을 이식할 때는 아래 TODO 지점에 필드 빌더 호출을 추가하면 된다. 653은
     async 함수이므로 이 함수 자체를 async def로 바꾸고 나머지 동기 호출부는
     asyncio.to_thread(...)로 감싸야 한다(core/fields/marc_653.py 상단 docstring 참고).
     """
@@ -189,7 +191,8 @@ def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
         pubdate = (item or {}).get("pubDate", "") or ""
         pubyear = pubdate[:4] if len(pubdate) >= 4 else ""
 
-        openai_client = _build_openai_client(get_settings())
+        settings = get_settings()
+        openai_client = _build_openai_client(settings)
         builder = MarcBuilder()
         all_tags: list[str] = []
 
@@ -207,8 +210,14 @@ def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
             if field:
                 builder.rec.add_field(field)
 
-        # TODO(041 이식 시): tag_041, tag_546 = build_041_546(item, detail={}, openai_client=openai_client)
-        # TODO(041 이식 시): _add(tag_041); _add(tag_546)
+        # ── 041/546 ──────────────────────────────────────────
+        tag_041, tag_546, orig_title_041 = build_041_546(
+            item, detail={},
+            openai_client=openai_client,
+            model=settings.openai_model_041,
+        )
+        _add(LangFieldBuilder.as_mrk_041(tag_041))
+        _add(LangFieldBuilder.as_mrk_546(tag_546))
 
         # ── 245/246/900 계열 ────────────────────────────────
         f245_ctx = build_245_family(
@@ -264,6 +273,8 @@ def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
             "publisher_raw": publisher_raw,
             "place_display": bundle.get("place_display", ""),
             "pubyear": pubyear,
+            "tag_041": tag_041 or "",
+            "tag_546": tag_546 or "",
             "tag_260": tag_260 or "",
             "tag_300": tag_300 or "",
             "category_id":   (item or {}).get("categoryId", ""),

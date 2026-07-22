@@ -1071,3 +1071,382 @@ def gpt_orig_info_lookup(
             result["orig_author_kanji"] = second["orig_author_kanji"]
 
     return result
+
+
+# ============================================================
+# AladinAuthorScraper — 저자/역자 소개글(Bio) 수집 (API-First + 웹 크롤링 폴백)
+# ============================================================
+#
+# 원본: 041/041.py 의 "2. AladinAuthorScraper" 섹션 전체. 041(언어코드) 필드가
+# determine_h_language()의 비문학/문학 파이프라인에서 원서 언어 추론용 단서로 쓴다.
+#
+# 수집 우선순위:
+#   1순위 (API)      item['subInfo']['authors'][n]['authorBio'] 등 — 네트워크 요청 0회
+#   2순위 (웹·ID)    API에 authorId 있으면 wauthor_overview 크롤링 — 네트워크 요청 1회
+#   3순위 (웹·HTML)  API에 authorId 없으면 wproduct 상세 HTML에서 이름 매칭으로
+#                    ID를 파싱한 뒤 wauthor_overview 크롤링 — 네트워크 요청 최대 2회
+
+_TRANSLATOR_ROLE_STRICT: tuple[str, ...] = ("옮긴이", "역자", "옮김", "번역")
+_WRITER_ROLE_KEYS:       tuple[str, ...] = ("지은이", "지음", "글")
+
+# API subInfo.authors 에서 Bio를 꺼낼 필드 우선순위
+_API_BIO_KEYS: tuple[str, ...] = (
+    "authorBio", "biography", "authorIntro",
+    "intro", "description", "authorDescription", "profile",
+)
+# item 루트에서 보조 텍스트를 꺼낼 필드
+_ITEM_DESC_KEYS: tuple[str, ...] = (
+    "fulldescription", "fullDescription", "Story", "story", "toc", "Toc",
+)
+# wauthor_overview HTML 정제 시 제거할 태그
+_BIO_DECOMPOSE_TAGS: tuple[str, ...] = (
+    "script", "style", "meta", "noscript", "header", "footer",
+    "nav", "aside", "menu", "form", "button", "input", "select",
+    "label", "iframe", "link", "ul", "ol", "li", "a",
+)
+# AuthorSearch href ID 추출용 정규식
+_AUTHOR_SEARCH_HREF_RE = re.compile(r"AuthorSearch=(?:[^&]*?@)?(\d+)", re.I)
+
+
+def _role_is_translator(role: str) -> bool:
+    """역자 역할 여부 판별."""
+    r = (role or "").strip()
+    if not r:
+        return False
+    if any(m in r for m in _TRANSLATOR_ROLE_STRICT):
+        return True
+    if "역" in r and not any(x in r for x in ("지은이", "지음", "감수", "교정", "편집")):
+        return True
+    return False
+
+
+def _role_is_writer(role: str) -> bool:
+    """저자(지은이) 역할 여부 판별."""
+    r = (role or "").strip()
+    return any(k in r for k in _WRITER_ROLE_KEYS)
+
+
+def _collect_bio_from_api(item: dict, target_name: str) -> str:
+    """
+    API item['subInfo']['authors'] 에서 target_name 의 소개글을 수집.
+    이름 필터: target_name이 비어 있으면 필터 없이 전체 수집.
+    item 루트의 fulldescription/Story 등도 보조 포함.
+    """
+    chunks: list[str] = []
+    sub = item.get("subInfo") or {}
+
+    for auth in sub.get("authors") or []:
+        if not isinstance(auth, dict):
+            continue
+        if target_name:
+            if (auth.get("authorName") or "").strip() != target_name.strip():
+                continue
+        for key in _API_BIO_KEYS:
+            val = auth.get(key)
+            if isinstance(val, str) and val.strip():
+                chunks.append(val.strip())
+        # 키 이름이 달라도 긴 문자열이면 소개글로 간주
+        for k, v in auth.items():
+            if k in ("authorName", "authorId", "authorTypeDesc", "authorTypeName"):
+                continue
+            if isinstance(v, str) and len(v) > 40:
+                chunks.append(v.strip())
+
+    # 책 설명·목차 등 보조 텍스트
+    for key in _ITEM_DESC_KEYS:
+        v = item.get(key) or sub.get(key)
+        if isinstance(v, str) and len(v) > 80:
+            chunks.append(v[:5000])
+
+    return "\n\n".join(dict.fromkeys(chunks))
+
+
+def _extract_author_id_from_api(
+    item: dict, target_name: str, want_translator: bool
+) -> int | None:
+    """subInfo.authors 에서 역할+이름이 일치하는 authorId 반환. 없으면 None."""
+    sub = item.get("subInfo") or {}
+    for auth in sub.get("authors") or []:
+        if not isinstance(auth, dict):
+            continue
+        if target_name and (auth.get("authorName") or "").strip() != target_name.strip():
+            continue
+        role = (auth.get("authorTypeDesc") or auth.get("authorTypeName") or "").strip()
+        if want_translator and not _role_is_translator(role):
+            continue
+        if not want_translator and not _role_is_writer(role):
+            continue
+        aid = auth.get("authorId")
+        try:
+            return int(aid) if aid is not None else None
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _parse_names_from_raw_author(raw_author: str, want_translator: bool) -> list[str]:
+    """subInfo.authors 없을 때 item['author'] 원시 문자열에서 이름 파싱 폴백."""
+    names: list[str] = []
+    tr_kw = ("옮긴이", "역자", "옮김", "역")
+    wr_kw = ("지은이", "지음", "글")
+    for part in (raw_author or "").split(","):
+        if want_translator:
+            if not any(k in part for k in tr_kw):
+                continue
+            name = re.sub(r"\(.*?\)|옮긴이|역자|옮김|지은이|지음|역", "", part, flags=re.I).strip()
+        else:
+            if not any(k in part for k in wr_kw):
+                continue
+            if any(k in part for k in tr_kw):
+                continue
+            name = re.sub(r"\(.*?\)|지은이|지음|글|옮긴이|역자|옮김", "", part, flags=re.I).strip()
+        if name:
+            names.append(name)
+    return list(dict.fromkeys(names))
+
+
+class AladinAuthorScraper:
+    """
+    저자/역자 소개글(Bio) 수집기 — API-First + 웹 크롤링 폴백.
+
+    수집 우선순위
+    ─────────────────────────────────────────────────────────────
+    1순위 (API)      item['subInfo']['authors'][n]['authorBio'] 등
+                     → 네트워크 요청 0회
+    2순위 (웹·ID)    API에 authorId 있으면 wauthor_overview 크롤링
+                     → 네트워크 요청 1회
+    3순위 (웹·HTML)  API에 authorId 없으면 wproduct 상세 HTML에서
+                     이름 매칭으로 ID를 파싱한 뒤 wauthor_overview 크롤링
+                     → 네트워크 요청 최대 2회
+    """
+
+    _WPRODUCT_BASE  = "https://www.aladin.co.kr/shop/wproduct.aspx"
+    _OVERVIEW_BASE  = "https://www.aladin.co.kr/author/wauthor_overview.aspx"
+    _ITEM_SEARCH    = ALADIN_SEARCH_URL
+    _HEADERS: dict[str, str] = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
+        "Referer":         "https://www.aladin.co.kr/",
+    }
+    _TIMEOUT    = 10
+    _RETRY      = 2
+    _RETRY_WAIT = 1.0
+
+    # ── HTTP 헬퍼 ─────────────────────────────────────────────
+
+    def _get(self, url: str, params: dict | None = None) -> requests.Response | None:
+        """재시도 포함 GET. 실패 시 None."""
+        for attempt in range(self._RETRY):
+            try:
+                resp = requests.get(
+                    url, params=params,
+                    headers=self._HEADERS, timeout=self._TIMEOUT,
+                )
+                resp.raise_for_status()
+                return resp
+            except Exception:
+                if attempt < self._RETRY - 1:
+                    time.sleep(self._RETRY_WAIT)
+        return None
+
+    # ── 상세 페이지 기반 AuthorId 파싱 ───────────────────────
+
+    @staticmethod
+    def _extract_id_from_href(href: str) -> int | None:
+        """href에서 AuthorSearch=…@숫자 패턴으로 ID 추출."""
+        if not href or "AuthorSearch=" not in href:
+            return None
+        m = _AUTHOR_SEARCH_HREF_RE.search(href)
+        if not m:
+            return None
+        try:
+            return int(m.group(1))
+        except (TypeError, ValueError):
+            return None
+
+    def _resolve_id_from_html(self, html_text: str, target_name: str) -> int | None:
+        """
+        wproduct 상세 HTML에서 AuthorSearch= 링크를 순회하며
+        앵커 텍스트가 target_name과 정확히 일치하는 항목의 ID 반환.
+        """
+        t = (target_name or "").strip()
+        if not t or not html_text:
+            return None
+        soup = BeautifulSoup(html_text, "html.parser")
+        for anchor in soup.find_all("a", href=True):
+            href = anchor.get("href") or ""
+            if "AuthorSearch=" not in href:
+                continue
+            text = re.sub(r"\s+", " ", anchor.get_text(separator=" ", strip=True)).strip()
+            if text != t:
+                continue
+            aid = self._extract_id_from_href(href)
+            if aid is not None:
+                return aid
+        return None
+
+    def _scrape_author_id_from_product(
+        self, item: dict, target_name: str
+    ) -> int | None:
+        """
+        item에서 ItemId(또는 isbn13)를 구해 wproduct 상세 페이지를 fetch한 뒤
+        target_name과 일치하는 저자 링크의 ID 반환. 실패 시 None.
+        """
+        pid: str | None = None
+        for key in ("itemId", "item_id"):
+            v = (item or {}).get(key)
+            if v is not None and str(v).strip():
+                pid = str(v).strip()
+                break
+        if not pid:
+            isbn = (
+                (item or {}).get("isbn13") or (item or {}).get("isbn") or ""
+            ).replace("-", "").strip()
+            pid = isbn or None
+        if not pid:
+            return None
+        resp = self._get(self._WPRODUCT_BASE, params={"ItemId": pid})
+        if resp is None:
+            return None
+        return self._resolve_id_from_html(resp.text, target_name)
+
+    # ── wauthor_overview 크롤링 ──────────────────────────────
+
+    def scrape_author_bio_from_overview(self, author_id: int) -> str:
+        """wauthor_overview.aspx에서 소개글 크롤링. 노이즈 태그 제거 후 p·리프 div 수집."""
+        if not author_id:
+            return ""
+        resp = self._get(self._OVERVIEW_BASE, params={"AuthorSearch": f"@{author_id}"})
+        if resp is None:
+            return ""
+        soup = BeautifulSoup(resp.text, "html.parser")
+        for tag_name in _BIO_DECOMPOSE_TAGS:
+            for el in soup.find_all(tag_name):
+                el.decompose()
+        root = soup
+        for attr, pattern in (
+            ("id",    re.compile(r"author|writer|profile|bio", re.I)),
+            ("class", re.compile(r"author|writer|profile|bio|intro", re.I)),
+        ):
+            found = soup.find(attrs={attr: pattern})
+            if found is not None:
+                root = found
+                break
+        chunks: list[str] = []
+        for p in root.find_all("p"):
+            t = p.get_text(separator=" ", strip=True)
+            if len(t) >= 8:
+                chunks.append(t)
+        for div in root.find_all("div"):
+            if div.find(["div", "p", "ul", "ol", "nav", "table"]):
+                continue
+            t = div.get_text(separator=" ", strip=True)
+            if len(t) >= 20:
+                chunks.append(t)
+        bio_text = "\n\n".join(dict.fromkeys(chunks))
+        if not bio_text and root is not soup:
+            for p in soup.find_all("p"):
+                t = p.get_text(separator=" ", strip=True)
+                if len(t) >= 8:
+                    chunks.append(t)
+            bio_text = "\n\n".join(dict.fromkeys(chunks))
+        return bio_text[:1500] if bio_text else ""
+
+    # ── 공개 인터페이스 ──────────────────────────────────────
+
+    def fetch_bios(self, item: dict) -> tuple[str, str]:
+        """
+        API-First 방식으로 저자·역자 Bio를 수집.
+
+        Parameters
+        ----------
+        item : 알라딘 API ItemLookUp 응답의 item dict
+               (subInfo.authors, author, fulldescription 등 포함)
+
+        수집 파이프라인 (저자·역자 각각 독립 실행)
+        ──────────────────────────────────────────
+        Step 1  API 소개글 (_collect_bio_from_api)
+                → 결과가 있으면(> 5자) 즉시 반환, 네트워크 요청 0회
+        Step 2  API authorId 있음 → scrape_author_bio_from_overview
+        Step 3  API authorId 없음 → wproduct HTML 이름 매칭으로 ID 파싱
+                → scrape_author_bio_from_overview
+        """
+        item = item or {}
+        sub  = item.get("subInfo") or {}
+        authors_list = [a for a in (sub.get("authors") or []) if isinstance(a, dict)]
+
+        # 저자(지은이) 이름 목록
+        writer_names: list[str] = []
+        for auth in authors_list:
+            role = (auth.get("authorTypeDesc") or auth.get("authorTypeName") or "").strip()
+            if _role_is_writer(role):
+                n = (auth.get("authorName") or "").strip()
+                if n:
+                    writer_names.append(n)
+        if not writer_names:
+            writer_names = _parse_names_from_raw_author(
+                item.get("author") or "", want_translator=False
+            )
+
+        # 역자 이름 목록
+        translator_names: list[str] = []
+        for auth in authors_list:
+            role = (auth.get("authorTypeDesc") or auth.get("authorTypeName") or "").strip()
+            if _role_is_translator(role):
+                n = (auth.get("authorName") or "").strip()
+                if n:
+                    translator_names.append(n)
+        if not translator_names:
+            translator_names = _parse_names_from_raw_author(
+                item.get("author") or "", want_translator=True
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_author = executor.submit(
+                self._fetch_single_bio, item, writer_names,     False
+            )
+            future_trans  = executor.submit(
+                self._fetch_single_bio, item, translator_names, True
+            )
+            author_bio     = future_author.result()
+            translator_bio = future_trans.result()
+        return author_bio, translator_bio
+
+    def _fetch_single_bio(
+        self,
+        item: dict,
+        names: list[str],
+        want_translator: bool,
+    ) -> str:
+        """
+        names 목록을 순서대로 시도해 비지 않은 Bio 하나를 반환.
+
+        Step 1  API 소개글 (네트워크 요청 없음)
+        Step 2  API authorId 있음 → wauthor_overview 크롤링
+        Step 3  API authorId 없음 → wproduct HTML 이름 매칭 → wauthor_overview 크롤링
+        """
+        for name in names[:2]:
+            # Step 1 — API 소개글 (네트워크 요청 없음)
+            api_bio = _collect_bio_from_api(item, name)
+            if api_bio.strip() and len(api_bio.strip()) > 5:
+                return api_bio.strip()
+
+            # Step 2 — API authorId로 바로 크롤링
+            aid = _extract_author_id_from_api(item, name, want_translator)
+
+            # Step 3 — API authorId 없으면 상세 페이지 HTML에서 파싱
+            if aid is None:
+                aid = self._scrape_author_id_from_product(item, name)
+
+            if aid is None:
+                continue
+
+            web_bio = self.scrape_author_bio_from_overview(aid)
+            if web_bio.strip():
+                return web_bio.strip()
+
+        return ""
