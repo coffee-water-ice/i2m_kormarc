@@ -327,7 +327,7 @@ def fetch_kdc_content_code_by_isbn(isbn: str, api_key: str) -> str:
         doc = docs[0]
         ea_add_code = str(doc.get("EA_ADD_CODE") or "").strip()
         if len(ea_add_code) >= 5 and ea_add_code.isdigit():
-            return ea_add_code[-3:]
+            return ea_add_code[1:4]
         kdc = str(doc.get("KDC") or "").strip()
         if len(kdc) >= 3 and kdc[:3].isdigit():
             return kdc[:3]
