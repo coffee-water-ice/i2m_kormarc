@@ -1591,15 +1591,15 @@ def crawl_aladin_publisher_intro_and_toc(isbn13: str) -> dict[str, str]:
 
     intro_desc, intro_toc = _extract_introduce_body(introduce_text)
     if intro_desc:
-        result["detail_description"] = intro_desc[:1500]
+        result["detail_description"] = intro_desc[:4000]
 
     if toc_text.strip():
-        result["toc"] = toc_text[:800]
+        result["toc"] = toc_text[:4000]
     elif intro_toc:
-        result["toc"] = intro_toc[:400]
+        result["toc"] = intro_toc[:4000]
 
     pub_desc = _extract_publisher_book_intro(publisher_text)
     if pub_desc:
-        result["publisher_desc"] = pub_desc[:1500]
+        result["publisher_desc"] = pub_desc[:6000]
 
     return result
