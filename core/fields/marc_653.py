@@ -1140,7 +1140,8 @@ def _finalize_653(
     content_code: str = "",
 ) -> tuple[str, dict]:
     """AI 출력에서 금지어·저효용어를 제거하고 $a 형식과 품질 지표를 함께 반환."""
-    keywords = [k.strip() for k in ai_output.split("$a") if k.strip()]
+    keywords = [k.strip().split("\n")[0].strip() for k in ai_output.split("$a") if k.strip()]
+    keywords = [k for k in keywords if k and not _PROMPT_ECHO_RE.search(k)]
     ai_raw_count = len(keywords)
 
     author_bio_like = {
