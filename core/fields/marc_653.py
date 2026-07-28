@@ -184,6 +184,11 @@ def _build_forbidden_set(title: str, authors: str) -> set[str]:
     return {f for f in forb if f and len(f) >= 2}
 
 
+_ALLOWED_FORBIDDEN_PREFIXES: frozenset[str] = frozenset({
+    "중국어", "일본어", "프랑스어", "독일어", "스페인어", "러시아어",
+    "toeic", "toefl", "jlpt", "jpt", "hsk", "ielts", "topik",
+})
+
 _SENTENCE_ENDING_RE = re.compile(r"(합니다|습니다|겠습니다|없습니다|됩니다|입니다|않습니다|드립니다)$")
 
 
@@ -202,8 +207,9 @@ def _should_keep_keyword(kw: str, forbidden: set[str]) -> bool:
         tok_compact = tok.replace(" ", "")
         if compact == tok_compact:
             return False
-        if len(tok_compact) >= 3 and compact.startswith(tok_compact):
-            return False
+        elif len(tok_compact) >= 3 and compact.startswith(tok_compact):
+            if tok_compact not in _ALLOWED_FORBIDDEN_PREFIXES:
+                return False
     return True
 
 
@@ -652,6 +658,8 @@ LOW_VALUE_KEYWORDS = {
     "성공학", "성공",
     "머리말", "책머리에", "들어가며", "프롤로그", "에필로그", "맺음말", "나가며",
     "Part", "Chapter", "Vol", "Section", "무엇인가", "내가", "찾기",
+    "일반", "연극", "그래픽", "멀티미디어", "그래픽일반", "활용능력",
+    "교양인문학", "모바일", "공예", "건축", "뷰티", "나라별요리", "기타", "서문",
 }
 
 CONTENT_FORMAT_TOKENS = ("팁", "비결", "상식", "추천", "모음")
@@ -664,6 +672,7 @@ CATEGORY_CANDIDATE_DENY = {
     "다이어트", "건강정보", "기술과학", "IT", "컴퓨터", "소프트웨어", "생활실용",
     "자기계발", "종교", "신앙", "역학", "국내도서", "외국도서", "외국어", "영어",
     "여행", "전집", "세트", "시리즈", "육아", "좋은부모",
+    "교양인문학", "건축", "뷰티", "공예",
 }
 
 # ISBN 부가기호(EA_ADD_CODE) 마지막 3자리 → category_group.
@@ -714,6 +723,8 @@ def _category_group_from_text(category: str) -> str:
             return "심리학"
         if "철학" in cat:
             return "철학"
+        if "역사" in cat:
+            return "역사"
     if "경제경영" in cat:
         return "경제경영"
     if "사회과학" in cat and "교육학" in cat:
@@ -752,6 +763,14 @@ def _is_low_value_keyword(normalized_keyword: str, category_group: str = "") -> 
     if compact in LOW_VALUE_KEYWORDS:
         return True
     if compact in CATEGORY_CANDIDATE_DENY:
+        return True
+    if compact.endswith("계열"):
+        return True
+    if compact.endswith("일반"):
+        return True
+    if "를위한" in compact or "을위한" in compact:
+        return True
+    if len(compact) >= 6 and compact.endswith("책"):
         return True
     if re.fullmatch(r"\d{4}년대이후.*", compact):
         return True
@@ -1054,7 +1073,7 @@ def _finalize_653(
     filtered_count = ai_raw_count - ai_valid_count
     backup_used = ai_valid_count == 0
 
-    if backup_used and category_group != "문학":
+    if backup_used and category_group not in ("문학", "에세이"):
         backup = _extract_backup_candidates(category, toc, description)
         for kw in backup:
             n = _norm_text(kw)
