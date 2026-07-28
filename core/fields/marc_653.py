@@ -865,8 +865,8 @@ def _build_input(
     max_keywords: int,
     publisher_desc: str = "",
     desc_max_chars: int = 600,
-    toc_max_chars: int = 300,
-    pub_desc_max_chars: int = 600,
+    toc_max_chars: int = 2000,
+    pub_desc_max_chars: int = 3000,
     content_code: str = "",
 ) -> str:
     """ISBN별 동적 입력 텍스트 생성."""
