@@ -349,7 +349,9 @@ CATEGORY_PROMPTS = {
         "  예) 촘스키·유발하라리·움베르토에코·수전손택·롤랑바르트\n\n"
         "유형D 현대 이슈·적용 주제 [0-1개. 설명 명시 시만]\n"
         "  글쓰기이면) 생성형AI·AI글쓰기·저작권·창작윤리\n"
-        "  사회/문화이면) 동물권·생태윤리·탈식민주의·디지털문화·문화다양성\n\n"
+        "  사회/문화이면) 동물권·생태윤리·탈식민주의·디지털문화·문화다양성\n"
+        "  금지: 트라우마·번아웃·외상후성장·심리적유연성 등 심리학·심리치료 전문어\n"
+        "  (해당 개념이 이 책의 주된 주제일 때만 예외 — 단순 설명 비유는 금지)\n\n"
         "유형E 독자층·활용맥락 [0-1개. 설명·제목 명시 시만]\n"
         "  예) 인문학입문·글쓰기교육·인문융합·교양강의\n\n"
         "금지: 단독 '인문학'·'문화'·'사상'·'교양' 등 상위분류어\n"
@@ -767,6 +769,35 @@ def kdc_content_code_to_group(content_code: str) -> str | None:
 def _category_group_from_text(category: str) -> str:
     """알라딘 카테고리 문자열만으로 대분류를 찾는다."""
     cat = category or ""
+
+    # 대학교재/전문서적: 최상위 노드보다 하위 학문 분야를 우선 인식
+    if "대학교재" in cat or "전문서적" in cat:
+        if "심리학" in cat or "정신분석" in cat:
+            return "심리학"
+        if "경영학" in cat or "경상계열" in cat:
+            return "경제경영"
+        if "경제학" in cat:
+            return "경제경영"
+        if "행정학" in cat or "사회과학계열" in cat:
+            return "사회정치"
+        if "법학" in cat:
+            return "사회정치"
+        if "임상의학" in cat or "의약학" in cat or "간호" in cat:
+            return "자연과학"
+        if "컴퓨터" in cat or "IT" in cat or "이공계열" in cat:
+            return "IT컴퓨터"
+        if "공학" in cat:
+            return "IT컴퓨터"
+        if "철학" in cat:
+            return "철학"
+        if "역사" in cat:
+            return "역사"
+        if "언어" in cat or "문학" in cat or "인문계열" in cat:
+            return "인문학"
+        if "교육" in cat or "사범계열" in cat:
+            return "교육"
+        return "기타"
+
     if "인문학" in cat:
         if "심리학" in cat or "정신분석" in cat:
             return "심리학"
@@ -922,7 +953,9 @@ _STATIC_INSTRUCTIONS = (
     "  키워드는 반드시 이 책의 실제 주제여야 함. 특히 '일반'·'기타'로 끝나는 말단 항목,\n"
     "  '모바일'·'그래픽'처럼 카테고리 상위 마디를 그대로 베끼는 것 금지.\n\n"
     "출력: $a키워드1 $a키워드2 ... 한 줄, 결과만. 예) $a번아웃 $a성장소설\n"
-    "정보가 부족하면 카테고리명 기반으로 추론 가능한 키워드만 출력할 것. "
+    "정보가 부족하면 제목·카테고리에서 실제 주제를 추론하여 구체 키워드를 출력할 것.\n"
+    "단, 카테고리 하위 분류명(예: '시간관리/정보관리 > 정보관리'→'시간관리' '정보관리')을\n"
+    "그대로 키워드로 쓰는 것 금지 — 제목에서 실제 주제를 추론해야 함.\n"
     "거절 메시지(I'm sorry, 죄송합니다, I cannot 등)는 절대 출력 금지."
 )
 
@@ -1004,6 +1037,9 @@ _REFUSAL_RE = re.compile(
 )
 
 
+_PROMPT_ECHO_RE = re.compile(r"유형[A-E]|슬롯|:\s*$|\[.*?\]|필수\]|설명·목차")
+
+
 def _parse_keyword_line(raw: str) -> list[str]:
     """GPT 응답에서 $a… 패턴(및 백업 파싱)으로 키워드 나열."""
     pattern = re.compile(r"\$a(.*?)(?=(?:\$a|$))", re.DOTALL)
@@ -1011,8 +1047,15 @@ def _parse_keyword_line(raw: str) -> list[str]:
     if not kws:
         tmp = re.split(r"[,\n;|/·]", raw)
         kws = [t.strip().lstrip("$a") for t in tmp if t.strip()]
-    kws = [kw.replace(" ", "") for kw in kws if kw]
-    return kws
+    result = []
+    for kw in kws:
+        kw = kw.replace(" ", "").split("\n")[0]  # 줄바꿈 이후 프롬프트 텍스트 제거
+        if not kw:
+            continue
+        if _PROMPT_ECHO_RE.search(kw):  # 프롬프트 텍스트 에코 방어
+            continue
+        result.append(kw)
+    return result
 
 
 def _extract_backup_candidates(category: str, toc: str, description: str) -> list[str]:
