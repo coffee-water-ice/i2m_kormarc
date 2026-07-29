@@ -13,6 +13,7 @@ api/aladin_client.py
 
 from __future__ import annotations
 
+import json
 import re
 
 import requests
@@ -25,6 +26,18 @@ OPT_RESULT_FULL = (
 )
 
 _TTBKEY_RE = re.compile(r"(ttbkey=)[^&\s]+", re.IGNORECASE)
+
+# 알라딘이 종종 subBarcode 등 필드에 이스케이프 안 된 원문 제어문자(\r\n 등)를
+# 그대로 흘려보내 json.loads가 "Invalid control character"로 실패하는 경우가 있다.
+# 정상 파싱을 우선 시도하고, 실패할 때만 제어문자를 제거해 재시도한다.
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f]+")
+
+
+def _parse_json_lenient(text: str) -> dict:
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return json.loads(_CONTROL_CHARS_RE.sub("", text))
 
 
 def _redact(msg: str) -> str:
@@ -70,7 +83,7 @@ def get_aladin_item_by_isbn(isbn: str, secrets: dict) -> tuple[dict, str | None]
         try:
             res = requests.get(url, params={"ttbkey": key, **base_params}, timeout=15)
             res.raise_for_status()
-            data = res.json()
+            data = _parse_json_lenient(res.text)
             # 알라딘 API 오류 응답 (한도 초과·키 오류 등) → 다음 키로
             if isinstance(data, dict) and data.get("errorCode"):
                 last_err = (
