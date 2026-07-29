@@ -1,8 +1,8 @@
 """
 출생신고 통계 기반 한국인 **이름(성 제외)** 목록·빈도.
 
-data/korean_given_name_weights.tsv — scripts/build_korean_given_names.py 로 갱신.
-출처: randkid/name (대법원 전자가족관계등록, 2008~2019)
+data/court_names_final.tsv — 대법원 전자가족관계등록시스템(stfamily.scourt.go.kr) API 직접 스크래핑
+(시도 15개 × 일별 2008-01-01~2026-06-30 × 성별 3종, 약 30만 쿼리). 빈도 없이 등록 여부만 확인.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-_DATA_TSV = Path(__file__).resolve().parent / "data" / "korean_given_name_weights.tsv"
+_DATA_TSV = Path(__file__).resolve().parent / "data" / "court_names_final.tsv"
 _DATA_TXT = Path(__file__).resolve().parent / "data" / "korean_given_names.txt"
 
 # 1글자 이름: 출생 건수 합(2008~2019) 미만이면 필명·비정상 의심 → 700 0_
@@ -62,14 +62,16 @@ def korean_given_name_weights() -> dict[str, int]:
         weights: dict[str, int] = {}
         for line in _DATA_TSV.read_text(encoding="utf-8").splitlines():
             line = line.strip()
-            if not line or line.startswith("name"):
+            if not line or line.startswith("name") or line == "이름":
                 continue
             parts = line.split("\t")
-            if len(parts) != 2:
-                continue
-            name, w = parts[0].strip(), parts[1].strip()
-            if name and w.isdigit():
-                weights[name] = int(w)
+            if len(parts) == 2:
+                name, w = parts[0].strip(), parts[1].strip()
+                if name and w.isdigit():
+                    weights[name] = int(w)
+            elif len(parts) == 1 and parts[0]:
+                # court_names_final.tsv: 빈도 없이 등록 여부만 → 1글자도 통과하도록 기준치로 설정
+                weights[parts[0]] = MIN_SINGLE_CHAR_GIVEN_WEIGHT
         return weights
 
     # 구버전 txt fallback (빈도 없음 → 1글자·2글자 모두 등록만 확인)
