@@ -37,10 +37,8 @@ KORMARC 653(자유주제어) 필드 생성 모듈.
 
 from __future__ import annotations
 
-import json
 import re
 import unicodedata
-from pathlib import Path
 
 from core.debug_log import dbg, dbg_err
 from core import token_tracker
@@ -184,6 +182,16 @@ def _build_forbidden_set(title: str, authors: str) -> set[str]:
     return {f for f in forb if f and len(f) >= 2}
 
 
+def _build_forbidden_compact(title: str, authors: str) -> str:
+    """제목·저자를 공백 없이 이어붙인 문자열.
+
+    공백 기준 토큰 매칭은 조사가 붙어 이어지는 한국어 특성상 제목
+    "인공지능과 정체성"에서 키워드 "인공지능"(조사 없는 원형)을 놓친다.
+    부분 문자열 검사로 이런 누락을 보완한다.
+    """
+    return _norm_text(title).replace(" ", "") + _norm_text(authors).replace(" ", "")
+
+
 _ALLOWED_FORBIDDEN_PREFIXES: frozenset[str] = frozenset({
     "중국어", "일본어", "프랑스어", "독일어", "스페인어", "러시아어",
     "toeic", "toefl", "jlpt", "jpt", "hsk", "ielts", "topik",
@@ -192,7 +200,7 @@ _ALLOWED_FORBIDDEN_PREFIXES: frozenset[str] = frozenset({
 _SENTENCE_ENDING_RE = re.compile(r"(합니다|습니다|겠습니다|없습니다|됩니다|입니다|않습니다|드립니다)$")
 
 
-def _should_keep_keyword(kw: str, forbidden: set[str]) -> bool:
+def _should_keep_keyword(kw: str, forbidden: set[str], title_compact: str = "") -> bool:
     n = _norm_text(kw)
     compact = n.replace(" ", "")
     if not n or len(compact) < 2:
@@ -203,6 +211,7 @@ def _should_keep_keyword(kw: str, forbidden: set[str]) -> bool:
         return False
     if compact in _TITLE_DERIVED_ALLOWED_KEYWORDS:
         return True
+    is_allowed_prefix_form = any(compact.startswith(p) for p in _ALLOWED_FORBIDDEN_PREFIXES)
     for tok in forbidden:
         tok_compact = tok.replace(" ", "")
         if compact == tok_compact:
@@ -210,6 +219,8 @@ def _should_keep_keyword(kw: str, forbidden: set[str]) -> bool:
         elif len(tok_compact) >= 3 and compact.startswith(tok_compact):
             if tok_compact not in _ALLOWED_FORBIDDEN_PREFIXES:
                 return False
+    if title_compact and not is_allowed_prefix_form and compact in title_compact:
+        return False
     return True
 
 
@@ -708,7 +719,7 @@ LOW_VALUE_KEYWORDS = {
     "외국어", "자기주도학습", "종합",
     "성공학", "성공",
     "머리말", "책머리에", "들어가며", "프롤로그", "에필로그", "맺음말", "나가며",
-    "Part", "Chapter", "Vol", "Section", "무엇인가", "내가", "찾기",
+    "part", "chapter", "vol", "section", "무엇인가", "내가", "찾기",
     "일반", "연극", "그래픽", "멀티미디어", "그래픽일반", "활용능력",
     "교양인문학", "모바일", "공예", "건축", "뷰티", "나라별요리", "기타", "서문",
 }
@@ -893,38 +904,6 @@ def _is_low_value_keyword(normalized_keyword: str, category_group: str = "") -> 
     return False
 
 
-# ── Few-shot 예시 DB ──────────────────────────────────────────────────────────
-_FEW_SHOTS_PATH = Path(__file__).parent / "few_shots_653.json"
-_FEW_SHOTS_CACHE: dict | None = None
-
-
-def _load_few_shots() -> dict:
-    global _FEW_SHOTS_CACHE
-    if _FEW_SHOTS_CACHE is None:
-        if _FEW_SHOTS_PATH.exists():
-            _FEW_SHOTS_CACHE = json.loads(_FEW_SHOTS_PATH.read_text(encoding="utf-8"))
-        else:
-            _FEW_SHOTS_CACHE = {}
-    return _FEW_SHOTS_CACHE
-
-
-def _build_few_shot_section(category_group: str, max_examples: int = 3) -> str:
-    shots = _load_few_shots().get(category_group, [])
-    if not shots:
-        return ""
-    lines = ["[참고 예시 — 유사 도서의 사서 작성 키워드]"]
-    for ex in shots[:max_examples]:
-        kw_str = " / ".join(ex["good_keywords"])
-        lines.append(f"  분류: {ex['category']}")
-        lines.append(f"  제목: {ex['title']}")
-        lines.append(f"  → 키워드: {kw_str}")
-        if ex.get("bad_keywords"):
-            bad_str = " / ".join(ex["bad_keywords"])
-            lines.append(f"  → 제외: {bad_str}")
-        lines.append("")
-    return "\n".join(lines)
-
-
 # ── 정적 instructions (원본 그대로 이식) ───────────────────────────────────────
 _STATIC_INSTRUCTIONS = (
     "KORMARC 653 자유주제어 전문가. 아래 원칙으로 $a키워드 형식 생성.\n\n"
@@ -985,13 +964,10 @@ def _build_input(
     pub_desc_trimmed = (publisher_desc or "")[:pub_desc_max_chars]
 
     pub_section = f"- 출판사 제공 책소개: \"{pub_desc_trimmed}\"\n" if pub_desc_trimmed else ""
-    few_shot_section = _build_few_shot_section(category_group)
-    few_shot_block = f"{few_shot_section}\n" if few_shot_section else ""
 
     return (
         f"[카테고리 그룹: {category_group}]\n"
         f"[카테고리별 지침]\n{category_prompt}\n"
-        f"{few_shot_block}"
         f"### 분석 대상 도서\n"
         f"- 분류(전체 체인): \"{category}\"\n"
         f"- 분류(핵심 꼬리): \"{cat_tail}\"\n"
@@ -1068,7 +1044,7 @@ def _extract_backup_candidates(category: str, toc: str, description: str) -> lis
         "단순히", "구체적", "올바른", "작은", "변화", "모음", "상식", "추천",
         "활기찬", "품격있는", "품격노년", "치과의사팁", "비결", "팁",
         "오래", "사는", "아프지", "보내는",
-        "Part", "Chapter", "Vol", "Section", "Unit", "Lesson",
+        "part", "chapter", "vol", "section", "unit", "lesson",
         "내가", "그가", "우리가", "무엇인가", "어떻게",
         "찾기", "하기", "되기", "쓰기",
     }
@@ -1077,11 +1053,13 @@ def _extract_backup_candidates(category: str, toc: str, description: str) -> lis
         w = t.replace(" ", "")
         if len(w) < 2 or len(w) > 10:
             continue
-        if w in deny:
+        if w.lower() in deny:
             continue
-        if re.search(r"^[가-힣]{2,}는$", w):
+        if re.search(r"^[가-힣]{1,}는$", w):
             continue
         if re.search(r"^[가-힣]{3,}면$", w):
+            continue
+        if re.search(r"^[가-힣]{1,}(의|이|가|을|를|은|들|과|와|며|로)$", w):
             continue
         out.append(w)
     return out
@@ -1138,6 +1116,7 @@ def _finalize_653(
     toc: str = "",
     description: str = "",
     content_code: str = "",
+    title_compact: str = "",
 ) -> tuple[str, dict]:
     """AI 출력에서 금지어·저효용어를 제거하고 $a 형식과 품질 지표를 함께 반환."""
     keywords = [k.strip().split("\n")[0].strip() for k in ai_output.split("$a") if k.strip()]
@@ -1154,7 +1133,7 @@ def _finalize_653(
     valid_keywords: list[str] = []
     seen: set[str] = set()
     for kw in keywords:
-        if _should_keep_keyword(kw, forbidden_set):
+        if _should_keep_keyword(kw, forbidden_set, title_compact):
             n = _norm_text(kw)
             if _is_low_value_keyword(n, category_group):
                 continue
@@ -1177,7 +1156,7 @@ def _finalize_653(
                 continue
             if _is_low_value_keyword(n, category_group):
                 continue
-            if not _should_keep_keyword(kw, forbidden_set):
+            if not _should_keep_keyword(kw, forbidden_set, title_compact):
                 continue
             if not allow_bio and any(b in n for b in author_bio_like):
                 continue
@@ -1194,7 +1173,7 @@ def _finalize_653(
                 continue
             if _is_low_value_keyword(n, category_group):
                 continue
-            if not _should_keep_keyword(kw, forbidden_set):
+            if not _should_keep_keyword(kw, forbidden_set, title_compact):
                 continue
             seen.add(n)
             valid_keywords.append(kw)
@@ -1369,17 +1348,21 @@ def build_653_field(
         return None, f"OpenAI 653 호출 실패: {e}"
 
     forbidden = _build_forbidden_set(title, authors)
+    title_compact = _build_forbidden_compact(title, authors)
     if _REFUSAL_RE.search(raw or ""):
         dbg("[653] AI 거절 응답 감지 → fallback 처리")
         raw = ""
     kws = _parse_keyword_line(raw)
-    ai_output = "".join(f"$a{kw}" for kw in kws if _should_keep_keyword(kw, forbidden))
+    ai_output = "".join(
+        f"$a{kw}" for kw in kws if _should_keep_keyword(kw, forbidden, title_compact)
+    )
 
-    effective_min = 3 if category_group == "문학" else min_keywords
+    effective_min = 3 if category_group in ("문학", "에세이") else min_keywords
     subfield_line, quality = _finalize_653(
         ai_output, forbidden,
         max_keywords=max_keywords, min_keywords=effective_min,
         category=category, toc=toc, description=description, content_code=content_code,
+        title_compact=title_compact,
     )
     dbg(
         f"[653] 품질: raw={quality['ai_raw_count']} filtered={quality['filtered_count']} "
