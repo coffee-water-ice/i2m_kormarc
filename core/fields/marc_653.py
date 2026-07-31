@@ -1001,6 +1001,7 @@ def _call_static_instructions_api(
         instructions=_STATIC_INSTRUCTIONS,
         input=input_text,
         max_output_tokens=max_output_tokens,
+        temperature=0.2,
     )
     if resp.usage:
         token_tracker.add(resp.usage.input_tokens, resp.usage.output_tokens)
