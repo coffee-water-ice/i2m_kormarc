@@ -334,3 +334,44 @@ def fetch_kdc_content_code_by_isbn(isbn: str, api_key: str) -> str:
         return ""
     except Exception:
         return ""
+
+
+def fetch_isbn_addendum_from_nlk(isbn: str, api_key: str) -> dict:
+    """
+    Seoji API에서 020(ISBN) 필드에 필요한 부가 정보를 조회한다.
+
+    020 $g(부가기호)·$c(가격 폴백)·세트 ISBN 부출용 — 653의 content_code 조회와는
+    다른 용도로 같은 Seoji 문서를 다시 읽는다(원본: 2025년 코드의
+    fetch_additional_code_from_nlk, 여러 URL을 순서대로 시도하던 것을 이 파일의
+    기존 함수들과 동일하게 단일 URL + requests 동기 호출로 단순화했다).
+
+    조회 실패·키 없음 시 세 값 모두 빈 문자열.
+    """
+    key = (api_key or "").strip()
+    isbn13 = re.sub(r"[^0-9Xx]", "", (isbn or ""))
+    empty = {"add_code": "", "set_isbn": "", "price": ""}
+    if not key or len(isbn13) != 13:
+        return empty
+
+    params = {
+        "cert_key": key,
+        "result_style": "json",
+        "page_no": 1,
+        "page_size": 1,
+        "isbn": isbn13,
+    }
+    try:
+        resp = requests.get(_NLK_SEOJI_API_URL, params=params, timeout=12, headers=_NLK_HEADERS)
+        resp.raise_for_status()
+        data = resp.json()
+        docs = data.get("docs") if isinstance(data, dict) else None
+        if not isinstance(docs, list) or not docs or not isinstance(docs[0], dict):
+            return empty
+        doc = docs[0]
+        return {
+            "add_code": str(doc.get("EA_ADD_CODE") or "").strip(),
+            "set_isbn": str(doc.get("SET_ISBN") or "").strip(),
+            "price": str(doc.get("PRE_PRICE") or "").strip(),
+        }
+    except Exception:
+        return empty
