@@ -11,6 +11,9 @@ FastAPI 애플리케이션 진입점 — i2m_kormarc 통합 골격.
   - 653(주제명 키워드)은 653 팀원의 ai_service.py(18개 분야별 GPT 프롬프트)를 이관해
     실제로 동작한다(core/fields/marc_653.py). KPIPA/NLK 보강은 원본과 동일하게
     기본 비활성(opt-in)이다.
+  - 007(형태자료 부호)/008(부호화정보)은 2025년 코드(1215_main.py)의 규칙 기반
+    로직을 이관해 실제로 동작한다(core/fields/marc_007_008.py). GPT를 쓰지 않고,
+    041의 언어코드·260의 발행국코드를 그대로 재사용한다.
 
 엔드포인트:
   POST /api/convert        — 단일 ISBN → MARC 변환
@@ -39,6 +42,7 @@ from core.config import Settings, get_settings, load_streamlit_secrets_into_env
 from core.debug_log import clear_debug_lines, get_debug_lines
 from core import token_tracker
 from core.marc_builder import MarcBuilder, kormarc_tag_to_mrk, mrk_str_to_field
+from core.fields.marc_007_008 import build_007_field, build_008_field
 from core.fields.marc_260 import build_260_field
 from core.fields.marc_300 import build_300_field
 from core.fields.marc_245 import build_245_family
@@ -175,7 +179,7 @@ def _build_openai_client(settings: Settings) -> openai.OpenAI | None:
 
 def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
     """
-    단일 ISBN 변환 핵심 로직. 041/546/245/246/500/700/710/900/260/300/653을 생성한다.
+    단일 ISBN 변환 핵심 로직. 041/546/245/246/500/700/710/900/007/008/260/300/653을 생성한다.
     """
     start_time = time.perf_counter()
     token_tracker.clear()
@@ -257,6 +261,17 @@ def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
         if f_260:
             builder.rec.add_field(f_260)
 
+        # ── 007/008 ──────────────────────────────────────────
+        # 041의 언어코드($a)와 260의 발행국코드(bundle)가 모두 필요해 이 시점에 생성한다.
+        tag_007 = build_007_field()
+        _add(tag_007)
+        tag_008 = build_008_field(
+            item,
+            country_code=bundle.get("country_code", "   "),
+            lang3=LangFieldBuilder.lang3_from_tag041(tag_041),
+        )
+        _add(tag_008)
+
         # ── 300 ──────────────────────────────────────────────
         tag_300, f_300, illus_diag = build_300_field(item, isbn=isbn, secrets=secrets)
         all_tags.append(tag_300)
@@ -288,6 +303,8 @@ def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
             "pubyear": pubyear,
             "tag_041": tag_041 or "",
             "tag_546": tag_546 or "",
+            "tag_007": tag_007 or "",
+            "tag_008": tag_008 or "",
             "tag_260": tag_260 or "",
             "tag_300": tag_300 or "",
             "tag_653": tag_653 or "",
@@ -330,7 +347,7 @@ async def health():
 
 @app.post("/api/convert", response_model=ConvertResult, tags=["MARC 변환"])
 async def convert_single(req: ConvertRequest):
-    """단일 ISBN을 MARC 레코드로 변환한다. (041/546/245/246/500/700/710/900/940/260/300/653 생성)"""
+    """단일 ISBN을 MARC 레코드로 변환한다. (041/546/245/246/500/700/710/900/940/007/008/260/300/653 생성)"""
     secrets = _settings_to_secrets(get_settings())
     result = _run_conversion(req, secrets)
     if result.error:
