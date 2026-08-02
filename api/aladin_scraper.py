@@ -1603,3 +1603,26 @@ def crawl_aladin_publisher_intro_and_toc(isbn13: str) -> dict[str, str]:
         result["publisher_desc"] = pub_desc[:6000]
 
     return result
+
+
+# ═══════════════════════════════════════════════════════════════
+# 020(ISBN)/950(가격)용 — 알라딘 정가 크롤링 폴백
+# ═══════════════════════════════════════════════════════════════
+# 원본: 2025년 코드의 crawl_aladin_original_and_price(). item["priceStandard"]가
+# 비어 있는 드문 경우에만 쓰는 최후 폴백이라 원제 추출 부분은 가져오지 않고
+# 가격만 이식했다(원제는 이미 245/041이 다른 경로로 훨씬 정교하게 조회한다).
+
+def crawl_aladin_price(isbn13: str) -> str:
+    """알라딘 상품페이지에서 정가(숫자만)를 크롤링한다. 실패 시 빈 문자열."""
+    url = f"https://www.aladin.co.kr/shop/wproduct.aspx?ISBN={isbn13}"
+    try:
+        resp = requests.get(url, headers=ALADIN_HEADERS, timeout=10.0)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        price_el = soup.select_one("span.price2")
+        if not price_el:
+            return ""
+        raw = price_el.get_text(strip=True).replace("정가 : ", "").replace("원", "")
+        return re.sub(r"[^\d]", "", raw)
+    except Exception:
+        return ""
