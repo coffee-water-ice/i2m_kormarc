@@ -7,6 +7,7 @@ Streamlit 컴포넌트는 이 모듈만 통해 백엔드를 호출한다.
 from __future__ import annotations
 
 import base64
+import time
 
 import requests
 import streamlit as st
@@ -26,6 +27,11 @@ def _resolve_base_url() -> str:
 _BASE = _resolve_base_url()
 
 
+def get_backend_url() -> str:
+    """Streamlit Home의 시스템 상태 표시용 — 현재 연결 중인 백엔드 주소."""
+    return _BASE
+
+
 def _url(path: str) -> str:
     return f"{_BASE.rstrip('/')}/{path.lstrip('/')}"
 
@@ -39,25 +45,43 @@ def _default_timeout() -> int:
 
 def check_backend_health() -> dict:
     """
-    백엔드 /health 호출. Home 페이지에서 백엔드 연결 상태를 보여줄 때 사용.
+    백엔드 /health 호출. Home 페이지의 "시스템 상태"가 이 결과 하나로 연결 여부·
+    응답시간·배포 버전·외부 API 키 설정 여부·653 opt-in 기능 활성화 여부를 표시한다.
 
     Returns:
-        {"ok": bool, "detail": str}
+        {
+            "ok": bool, "detail": str, "elapsed_ms": int | None,
+            "version": dict | None, "secrets_configured": dict | None,
+            "features": dict | None,
+        }
     """
     try:
         # Render 무료/스타터 플랜은 일정 시간 요청이 없으면 슬립 상태로 들어가고,
         # 다음 요청에서 깨어나는 데 수십 초가 걸릴 수 있다(콜드 스타트). 5초처럼
         # 짧은 timeout을 쓰면 이 콜드 스타트 중에는 매번 타임아웃으로 실패한 것처럼
         # 보이므로, 다른 API 호출과 동일하게 _default_timeout()을 쓴다.
+        start = time.perf_counter()
         resp = requests.get(_url("/health"), timeout=_default_timeout())
+        elapsed_ms = round((time.perf_counter() - start) * 1000)
         resp.raise_for_status()
-        return {"ok": True, "detail": resp.json().get("status", "ok")}
+        data = resp.json()
+        return {
+            "ok": True,
+            "detail": data.get("status", "ok"),
+            "elapsed_ms": elapsed_ms,
+            "version": data.get("version"),
+            "secrets_configured": data.get("secrets_configured"),
+            "features": data.get("features"),
+        }
     except requests.exceptions.ConnectionError:
-        return {"ok": False, "detail": "백엔드 서버에 연결할 수 없습니다"}
+        return {"ok": False, "detail": "백엔드 서버에 연결할 수 없습니다", "elapsed_ms": None,
+                "version": None, "secrets_configured": None, "features": None}
     except requests.exceptions.Timeout:
-        return {"ok": False, "detail": "백엔드 응답 시간 초과 (Render 콜드 스타트 중일 수 있음 — 잠시 후 새로고침해 보세요)"}
+        return {"ok": False, "detail": "백엔드 응답 시간 초과 (Render 콜드 스타트 중일 수 있음 — 잠시 후 새로고침해 보세요)",
+                "elapsed_ms": None, "version": None, "secrets_configured": None, "features": None}
     except Exception as e:
-        return {"ok": False, "detail": str(e)}
+        return {"ok": False, "detail": str(e), "elapsed_ms": None,
+                "version": None, "secrets_configured": None, "features": None}
 
 
 # ── MARC 변환 ────────────────────────────────────────────────
