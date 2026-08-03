@@ -27,10 +27,10 @@ st.subheader("시스템 상태")
 health = check_backend_health()
 
 if health["ok"]:
-    st.success(f"백엔드 연결 정상 ({health['detail']})")
+    st.markdown(f"✅ 백엔드 연결 정상 ({health['detail']})")
 else:
-    st.error(
-        f"백엔드에 연결할 수 없습니다: {health['detail']}\n"
+    st.markdown(
+        f"⚠️ 백엔드에 연결할 수 없습니다: {health['detail']}  \n"
         "터미널에서 `uvicorn app:app --reload`로 백엔드를 먼저 실행하세요."
     )
 
