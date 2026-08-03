@@ -1,12 +1,12 @@
 # i2m_kormarc — KORMARC 통합 변환 시스템
 
-041/245/653/260+300 4개 폴더를 하나의 시스템으로 합치는 통합 프로젝트다.
-자세한 배경은 상위 폴더의 `통합_계획.md`, `docs/INTEGRATION_SURVEY.md`,
-`docs/INTEGRATION_PRINCIPLES.md`를 참고할 것.
+041/245/653/260+300 4개 폴더 + 2025년 코드(단일 파일 `1215_main.py`)를 하나의
+시스템으로 합치는 통합 프로젝트다. 자세한 배경은 상위 폴더의 `통합_계획.md`,
+`docs/INTEGRATION_SURVEY.md`, `docs/INTEGRATION_PRINCIPLES.md`를 참고할 것.
 
 ## 현재 상태
 
-041/245/653/260+300 4개 폴더 통합이 모두 끝나 전 필드가 실제로 동작한다.
+041/245/653/260+300 4개 폴더 + 2025년 코드 이식이 모두 끝나 전 필드가 실제로 동작한다.
 
 - **041**(언어코드/546) — 041 폴더의 `LangFieldBuilder` 이관 (`core/fields/marc_041.py`)
 - **245/246/500/700/710/900/940** — 245 폴더 이관 (`core/fields/marc_245.py`, `marc_500_700_710.py`)
@@ -15,6 +15,23 @@
   필터링 파이프라인) 이관 (`core/fields/marc_653.py`). 알라딘 상세페이지 크롤링·KPIPA
   ONIX 목차·NLK 부가기호 보강도 함께 이식했으며, KPIPA/NLK 보강은 원본과 동일하게
   기본 비활성(opt-in, `core.config.Settings.kpipa_enable_653`/`nlk_enable_653`)이다.
+- **007(형태자료 부호)/008(부호화정보)** — 2025년 코드의 규칙 기반 로직 이관
+  (`core/fields/marc_007_008.py`). GPT 미사용. 041의 언어코드·260의 발행국코드를
+  재계산 없이 그대로 재사용하고, 삽화/색인/문학형식/전기 여부는 제목+책소개+목차
+  텍스트의 키워드 정규식으로 판정한다.
+- **020(ISBN)/950(가격)** — 같은 2025년 코드에서 이관(`core/fields/marc_020_950.py`).
+  GPT 미사용. NLK Seoji로 부가기호($g)·세트 ISBN·가격을 보강하고, 알라딘 정가가
+  없을 때만 상품페이지 크롤링으로 폴백한다.
+- **490(총서사항)/830(총서 부출표목)** — 같은 2025년 코드에서 이관
+  (`core/fields/marc_490_830.py`). GPT 미사용. 알라딘 `seriesInfo.seriesName`
+  말미의 숫자를 권차($v)로 분리해 기재한다(예: "민음사 세계문학전집 284" →
+  `$a민음사 세계문학전집 ;$v284`).
+
+2025년 코드 이식 3건(007/008, 020/950, 490/830) 모두 원본이 가정했던 일부 분기
+(하드코딩 지역 dict, `seriesInfo`가 list로 오는 경우, 별도 volume 필드 등)가 실제
+알라딘 API 응답으로는 한 번도 실행되지 않는 죽은 코드임을 직접 호출해 확인하고
+제외했다 — 실제로 쓰이는 경로만 이식했다. 950의 서브필드 표기(`$b` 값 앞 스트레이
+백슬래시)는 사용자 확인을 거쳐 "원화기호(₩) + 가격"으로 바로잡았다.
 
 부가 기능으로 변환 1건당 소요시간(`meta.elapsed_ms`)과 OpenAI 토큰 사용량
 (`meta.token_usage`)을 집계해 Streamlit 화면에 표시한다(`core/token_tracker.py`).
@@ -63,19 +80,24 @@ i2m_kormarc/
 │   │   ├── marc_260.py          # 실동작
 │   │   ├── marc_300.py          # 실동작
 │   │   ├── marc_653.py          # 실동작 (653, 18개 분야별 GPT 프롬프트 + 키워드 필터링)
-│   │   └── few_shots_653.json   # 653 GPT 프롬프트용 few-shot 예시 데이터
+│   │   ├── few_shots_653.json   # 653 GPT 프롬프트용 few-shot 예시 데이터
+│   │   ├── marc_007_008.py      # 실동작 (007/008, 규칙 기반, 2025년 코드 이관)
+│   │   ├── marc_020_950.py      # 실동작 (020/950, 규칙 기반, 2025년 코드 이관)
+│   │   └── marc_490_830.py      # 실동작 (490/830, 규칙 기반, 2025년 코드 이관)
 │   └── name_data/               # 실동작 (245 이름판별 데이터: 한국/일본 성씨, 출생신고 이름 통계)
 ├── api/
 │   ├── aladin_client.py         # 실동작 (OPT_RESULT_FULL)
 │   ├── aladin_scraper.py        # 실동작 (상품페이지·저자프로필 크롤링, GPT 원제/원저자 웹 검색,
-│   │                             #          653용 getContents.aspx 책소개/목차 크롤링)
-│   ├── nlk_client.py            # 실동작 (245 원서명/원저자명 폴백 + 653 부가기호 content_code)
+│   │                             #          653용 getContents.aspx 책소개/목차 크롤링,
+│   │                             #          950용 알라딘 정가 크롤링 폴백)
+│   ├── nlk_client.py            # 실동작 (245 원서명/원저자명 폴백 + 653 부가기호 content_code
+│   │                             #          + 020 부가기호/세트ISBN/가격)
 │   ├── kpipa_client.py          # 실동작 (출판사명 조회 + 653 ONIX 목차 추출)
 │   ├── mois_client.py           # 실동작
 │   ├── publisher_db.py          # 실동작 (build_pub_location_bundle)
 │   └── openai_client.py         # 실동작 (클라이언트 팩토리만)
 ├── database/
-│   └── feedback_logger.py       # 실동작 (SQLite, field_tag로 041~653 전 필드 공용)
+│   └── feedback_logger.py       # 실동작 (SQLite, field_tag로 모든 필드 공용)
 └── docs/
     ├── INTEGRATION_SURVEY.md
     └── INTEGRATION_PRINCIPLES.md
@@ -88,3 +110,6 @@ i2m_kormarc/
 - `core/fields/marc_300.py`는 알라딘 상세 페이지 HTTP 요청을 `api/aladin_scraper.py`를
   거치지 않고 직접 수행한다(원본 구조를 그대로 이관한 레이어링 잔재) — 크롤링
   일원화 리팩터링은 별도 작업으로 남겨둔다.
+- 008의 삽화 부호(18-21) 판정 정규식에 "표" 한 글자가 단독으로 들어 있어("도표|표|
+  차트|그래프") "대표작"·"발표" 같은 흔한 단어에도 오탐할 수 있다(2025년 코드 원본의
+  기존 결함, 그대로 이식함) — 필요하면 별도로 수정할 것.
