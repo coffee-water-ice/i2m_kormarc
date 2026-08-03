@@ -19,30 +19,25 @@ from api_client import check_backend_health, get_backend_url
 st.set_page_config(page_title="I2M KORMARC 통합 시스템", page_icon="📚", layout="wide")
 
 st.title("I2M KORMARC 통합 변환 시스템")
-st.caption("041 / 245 / 653 / 260+300 + 2025년 코드 — 통합 완료, 전 필드 실동작")
+st.caption("041 / 245 / 653 / 260+300 +2025년 코드 - 통합 완료, 전 필드 실동작")
 
 # ── 시스템 상태 ────────────────────────────────────────────────
 st.subheader("시스템 상태")
 
 health = check_backend_health()
+version = health.get("version") or {}
+secrets_configured = health.get("secrets_configured")
 
+st.markdown("**백엔드 및 배포**")
+st.markdown(f"🔗 백엔드 주소: `{get_backend_url()}`")
 if health["ok"]:
     st.markdown(f"✅ 백엔드 연결 정상 ({health['detail']})")
 else:
-    st.markdown(
-        f"⚠️ 백엔드에 연결할 수 없습니다: {health['detail']}  \n"
-        "터미널에서 `uvicorn app:app --reload`로 백엔드를 먼저 실행하세요."
-    )
-
-st.markdown(f"🔗 백엔드 주소: `{get_backend_url()}`")
-
-version = health.get("version") or {}
+    st.markdown(f'⛔ "{health["detail"]}"')
 if version.get("deployed_at"):
-    st.caption(f"마지막 배포(갱신) 시각: {version['deployed_at']} (KST) · 커밋 `{version.get('commit', '?')}`")
+    st.markdown(f"🔄️ 마지막 배포(갱신) 시각: {version['deployed_at']} (KST) · 커밋: `{version.get('commit', '?')}`")
 
-# 외부 API 키 설정 여부 — 기본 크기의 1/2~1/3 정도로 축소해 한 줄로 표시
 st.markdown("**외부 API 키 설정 여부**")
-secrets_configured = health.get("secrets_configured")
 if secrets_configured:
     _SECRET_LABELS = {
         "aladin_ttb_key":      "알라딘",
@@ -56,11 +51,11 @@ if secrets_configured:
     items = []
     for key, label in _SECRET_LABELS.items():
         ok = secrets_configured.get(key, False)
-        icon = "✅" if ok else "⚠️"
+        icon = "✅" if ok else "⛔"
         items.append(f"{icon} {label}")
     st.markdown("  ·  ".join(items))
 else:
-    st.caption("백엔드에 연결되지 않아 확인할 수 없습니다.")
+    st.markdown("⛔ 백엔드에 연결되지 않아 확인할 수 없습니다.")
 
 st.divider()
 
