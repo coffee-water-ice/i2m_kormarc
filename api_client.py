@@ -45,7 +45,7 @@ def _default_timeout() -> int:
 def check_backend_health() -> dict:
     """
     백엔드 /health 호출. Home 페이지의 "시스템 상태"가 이 결과 하나로 연결 여부·
-    마지막 배포(갱신) 시각·외부 API 키 설정 여부를 표시한다.
+    마지막 배포(갱신) 시각·커밋·외부 API 키 설정 여부를 표시한다.
 
     Returns:
         {"ok": bool, "detail": str, "version": dict | None, "secrets_configured": dict | None}

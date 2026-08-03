@@ -38,7 +38,7 @@ st.markdown(f"🔗 백엔드 주소: `{get_backend_url()}`")
 
 version = health.get("version") or {}
 if version.get("deployed_at"):
-    st.caption(f"마지막 배포(갱신) 시각: {version['deployed_at']} (KST)")
+    st.caption(f"마지막 배포(갱신) 시각: {version['deployed_at']} (KST) · 커밋 `{version.get('commit', '?')}`")
 
 # 외부 API 키 설정 여부 — 기본 크기의 1/2~1/3 정도로 축소해 한 줄로 표시
 st.markdown("**외부 API 키 설정 여부**")

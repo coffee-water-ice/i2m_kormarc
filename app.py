@@ -66,11 +66,14 @@ from core.fields.marc_653 import build_653_field
 
 logger = logging.getLogger("i2m_kormarc")
 
-# 배포(갱신) 시각 — 프로세스가 시작될 때(Render는 배포마다 재시작) 한 번만 계산해
-# 둔다. 서버 시간대와 무관하게 항상 한국시간(KST, UTC+9)으로 고정 표시한다
-# (Streamlit Home의 "시스템 상태"에서 마지막 배포가 언제였는지 확인용).
+# 배포(갱신) 시각/커밋 — 프로세스가 시작될 때(Render는 배포마다 재시작) 한 번만
+# 계산해 둔다. 시각은 서버 시간대와 무관하게 항상 한국시간(KST, UTC+9)으로 고정
+# 표시한다. 커밋은 Render가 빌드마다 자동 주입하는 RENDER_GIT_COMMIT을 쓰고,
+# 로컬 개발 환경에는 이 값이 없으므로 "local-dev"로 표시한다
+# (Streamlit Home의 "시스템 상태"에서 마지막 배포가 언제·어느 커밋인지 확인용).
 _KST = timezone(timedelta(hours=9))
 _DEPLOY_TIME = datetime.now(_KST).strftime("%Y-%m-%d %H:%M:%S")
+_DEPLOY_COMMIT = os.environ.get("RENDER_GIT_COMMIT", "")[:7] or "local-dev"
 
 
 # ============================================================
@@ -377,7 +380,7 @@ def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
 async def health():
     """
     헬스체크 + 시스템 상태. Streamlit Home 페이지가 이 응답 하나로 백엔드 연결
-    여부·마지막 배포(갱신) 시각·외부 API 키 설정 여부를 표시한다(키 값 자체는
+    여부·마지막 배포(갱신) 시각·커밋·외부 API 키 설정 여부를 표시한다(키 값 자체는
     절대 노출하지 않고 설정 유무만 boolean으로 반환).
     """
     settings = get_settings()
@@ -385,6 +388,7 @@ async def health():
         "status": "ok",
         "version": {
             "deployed_at": _DEPLOY_TIME,
+            "commit": _DEPLOY_COMMIT,
         },
         "secrets_configured": {
             "aladin_ttb_key":      bool(settings.aladin_ttb_key),
