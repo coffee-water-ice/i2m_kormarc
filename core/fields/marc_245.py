@@ -504,10 +504,47 @@ _ENG_DIGIT_KO: dict[str, str] = {
 _KO_DIGITS = ["", "일", "이", "삼", "사", "오", "육", "칠", "팔", "구"]
 _KO_PLACES = ["", "십", "백", "천"]
 _KO_LARGE  = ["", "만", "억", "조"]
+_KO_DIGIT_READ = ["공", "일", "이", "삼", "사", "오", "육", "칠", "팔", "구"]
+
+# 순우리말 단위명사(가지/개/명 등) 앞에서는 한자어 수사 대신 고유어 수사를 씀.
+# 단위명사 바로 앞은 관형형(하나→한, 둘→두, 셋→세, 넷→네, 스물→스무, 그 외는 동일).
+_KO_NATIVE_TENS = ["", "열", "스물", "서른", "마흔", "쉰", "예순", "일흔", "여든", "아흔"]
+_KO_NATIVE_ONES_ATTR = ["", "한", "두", "세", "네", "다섯", "여섯", "일곱", "여덟", "아홉"]
+_KO_NATIVE_TENS_ATTR = ["", "열", "스무", "서른", "마흔", "쉰", "예순", "일흔", "여든", "아흔"]
+_NATIVE_COUNTER_WORDS = (
+    "시간", "가지", "그루", "송이", "켤레", "마리", "조각", "다발", "마디",
+    "달", "개", "명", "살", "채", "벌", "자루", "시",
+)
+_NATIVE_COUNTER_RX = "|".join(_NATIVE_COUNTER_WORDS)
+
+
+def _native_korean_number_attr(n: int) -> str | None:
+    """단위명사 앞 순우리말 수관형사(세 명/여섯 가지 등). 1~99만 지원, 범위 밖이면 None."""
+    if n <= 0 or n > 99:
+        return None
+    if n < 10:
+        return _KO_NATIVE_ONES_ATTR[n]
+    tens, ones = divmod(n, 10)
+    if ones == 0:
+        return _KO_NATIVE_TENS_ATTR[tens]
+    return _KO_NATIVE_TENS[tens] + _KO_NATIVE_ONES_ATTR[ones]
+
+
+def _is_decade_pair_code(n: int) -> bool:
+    """1020/2030/.../9020처럼 두 자리 세대(연령대) 쌍으로 이루어진 4자리 숫자인지.
+    "1020 극우가 온다"처럼 "10대+20대"를 뜻하는 세대 코드는 큰 수(천이십)가 아니라
+    자릿수별(일공이공)로 읽어야 함."""
+    if n < 1000 or n > 9999:
+        return False
+    first, second = n // 100, n % 100
+    return 10 <= first <= 90 and first % 10 == 0 and 10 <= second <= 90 and second % 10 == 0
 
 
 def _arabic_to_korean(n: int) -> str:
-    """아라비아 숫자 → 한국어 수 읽기. 예: 64 → 육십사, 1984 → 천구백팔십사."""
+    """아라비아 숫자 → 한국어 수 읽기. 예: 64 → 육십사, 1984 → 천구백팔십사.
+    단, 1020/5060처럼 세대 코드로 보이는 4자리 숫자는 자릿수별로 읽음(일공이공)."""
+    if _is_decade_pair_code(n):
+        return "".join(_KO_DIGIT_READ[int(c)] for c in str(n))
     if n == 0:
         return "영"
     result = ""
@@ -551,11 +588,21 @@ def build_940(title: str) -> str | None:
             ko_num = "".join(_ENG_DIGIT_KO.get(c, c) for c in mixed.group(1))
             ko_let = "".join(_ENG_LETTER_KO.get(c.upper(), c) for c in mixed.group(2))
             return ko_num + ko_let
+        m_counter = re.match(r'^(\d+)(\s?)(' + _NATIVE_COUNTER_RX + r')$', token)
+        if m_counter:
+            num_part, space, counter = m_counter.group(1), m_counter.group(2), m_counter.group(3)
+            native = _native_korean_number_attr(int(num_part))
+            if native:
+                return native + space + counter
+            return _arabic_to_korean(int(num_part)) + space + counter
         if token.isdigit():
             return _arabic_to_korean(int(token))
         return "".join(_ENG_LETTER_KO.get(c.upper(), c) for c in token)
 
-    result = re.sub(r'[A-Za-z]+|\d+[A-Za-z]+|\d+', _replace, t)
+    result = re.sub(
+        r'[A-Za-z]+|\d+[A-Za-z]+|\d+\s?(?:' + _NATIVE_COUNTER_RX + r')|\d+',
+        _replace, t,
+    )
     if not has_change:
         return None
     result = re.sub(r'[^가-힣\s]', ' ', result)
