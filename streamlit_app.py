@@ -4,8 +4,8 @@ Streamlit 멀티페이지 앱의 진입점 겸 Home.
 
 041/245/653/260+300 4개 폴더 + 2025년 코드 이식이 모두 끝나 전 필드가 실동작하므로,
 이 페이지는 더 이상 "어떤 필드가 스텁인지"를 보여줄 필요가 없다. 대신 배포된
-백엔드의 시스템 상태(연결 여부·주소·응답시간·배포 버전·외부 API 키 설정 여부·
-653 opt-in 기능 활성화 여부)를 확인하는 용도로 쓴다.
+백엔드의 시스템 상태(연결 여부·주소·마지막 배포 시각·외부 API 키 설정 여부)를
+확인하는 용도로 쓴다.
 
 실제 변환 UI는 pages/1_ISBN_변환.py 로 옮겼다.
 """
@@ -26,54 +26,46 @@ st.subheader("시스템 상태")
 
 health = check_backend_health()
 
-col1, col2 = st.columns(2)
-with col1:
-    if health["ok"]:
-        st.success(f"백엔드 연결 정상 ({health['detail']})")
-    else:
-        st.error(
-            f"백엔드에 연결할 수 없습니다: {health['detail']}\n"
-            "터미널에서 `uvicorn app:app --reload`로 백엔드를 먼저 실행하세요."
-        )
-    st.caption(f"백엔드 주소: `{get_backend_url()}`")
+if health["ok"]:
+    st.success(f"백엔드 연결 정상 ({health['detail']})")
+else:
+    st.error(
+        f"백엔드에 연결할 수 없습니다: {health['detail']}\n"
+        "터미널에서 `uvicorn app:app --reload`로 백엔드를 먼저 실행하세요."
+    )
 
-with col2:
-    if health.get("elapsed_ms") is not None:
-        st.metric("헬스체크 응답시간", f"{health['elapsed_ms']} ms")
-    version = health.get("version") or {}
-    if version:
-        st.caption(f"배포 버전: 커밋 `{version.get('commit', '?')}` · 브랜치 `{version.get('branch', '?')}`")
+# 백엔드 주소 — 기본 캡션의 약 2배 크기
+st.markdown(
+    f'<p style="font-size:1.8em; margin:0.3rem 0;">🔗 백엔드 주소: <code>{get_backend_url()}</code></p>',
+    unsafe_allow_html=True,
+)
 
-st.markdown("**외부 API 키 설정 여부** (값은 노출하지 않고 설정 유무만 표시)")
+version = health.get("version") or {}
+if version.get("deployed_at"):
+    st.caption(f"마지막 배포(갱신) 시각: {version['deployed_at']} (KST)")
+
+# 외부 API 키 설정 여부 — 기본 크기의 1/2~1/3 정도로 축소해 한 줄로 표시
+st.markdown("**외부 API 키 설정 여부**")
 secrets_configured = health.get("secrets_configured")
 if secrets_configured:
     _SECRET_LABELS = {
-        "aladin_ttb_key":      "알라딘 API 키",
-        "openai_api_key":      "OpenAI API 키",
-        "kpipa_api_key":       "KPIPA API 키",
-        "data_go_kr":          "행정안전부(공공데이터포털) 인증키",
-        "nlk_cert_key":        "국립중앙도서관(NLK) 인증키",
-        "naver_search":        "네이버 검색 API 키",
-        "gspread_credentials": "Google Sheets 서비스 계정",
+        "aladin_ttb_key":      "알라딘",
+        "openai_api_key":      "OpenAI",
+        "kpipa_api_key":       "KPIPA",
+        "data_go_kr":          "행정안전부",
+        "nlk_cert_key":        "국립중앙도서관(NLK)",
+        "naver_search":        "네이버 검색",
+        "gspread_credentials": "Google Sheets",
     }
-    cols = st.columns(len(_SECRET_LABELS))
-    for col, (key, label) in zip(cols, _SECRET_LABELS.items()):
+    items = []
+    for key, label in _SECRET_LABELS.items():
         ok = secrets_configured.get(key, False)
-        with col:
-            st.metric(label, "✅ 설정됨" if ok else "⚠️ 미설정")
-else:
-    st.caption("백엔드에 연결되지 않아 확인할 수 없습니다.")
-
-st.markdown("**653 opt-in 기능 활성화 여부**")
-features = health.get("features")
-if features:
-    f1, f2 = st.columns(2)
-    with f1:
-        on = features.get("kpipa_enable_653", False)
-        st.metric("KPIPA 목차 보강", "🟢 활성화" if on else "⚪ 비활성화(기본값)")
-    with f2:
-        on = features.get("nlk_enable_653", False)
-        st.metric("NLK 부가기호 보강", "🟢 활성화" if on else "⚪ 비활성화(기본값)")
+        icon = "✅" if ok else "⚠️"
+        items.append(f"{icon} {label}")
+    st.markdown(
+        f'<p style="font-size:0.7em; color:gray; line-height:1.6;">{"  ·  ".join(items)}</p>',
+        unsafe_allow_html=True,
+    )
 else:
     st.caption("백엔드에 연결되지 않아 확인할 수 없습니다.")
 

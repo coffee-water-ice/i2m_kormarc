@@ -36,6 +36,7 @@ import logging
 import os
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import openai
@@ -65,11 +66,11 @@ from core.fields.marc_653 import build_653_field
 
 logger = logging.getLogger("i2m_kormarc")
 
-# 배포 식별 정보 — Render는 빌드마다 RENDER_GIT_COMMIT/RENDER_GIT_BRANCH를 자동
-# 주입한다. 로컬 개발 환경에는 이 값이 없으므로 "local-dev"로 표시한다
-# (Streamlit Home의 "시스템 상태"에서 지금 보는 사이트가 최신 배포인지 확인용).
-_DEPLOY_COMMIT = os.environ.get("RENDER_GIT_COMMIT", "")[:7] or "local-dev"
-_DEPLOY_BRANCH = os.environ.get("RENDER_GIT_BRANCH", "") or "-"
+# 배포(갱신) 시각 — 프로세스가 시작될 때(Render는 배포마다 재시작) 한 번만 계산해
+# 둔다. 서버 시간대와 무관하게 항상 한국시간(KST, UTC+9)으로 고정 표시한다
+# (Streamlit Home의 "시스템 상태"에서 마지막 배포가 언제였는지 확인용).
+_KST = timezone(timedelta(hours=9))
+_DEPLOY_TIME = datetime.now(_KST).strftime("%Y-%m-%d %H:%M:%S")
 
 
 # ============================================================
@@ -376,15 +377,14 @@ def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
 async def health():
     """
     헬스체크 + 시스템 상태. Streamlit Home 페이지가 이 응답 하나로 백엔드 연결
-    여부·배포 버전·외부 API 키 설정 여부·653 opt-in 기능 활성화 여부를 모두 표시한다
-    (키 값 자체는 절대 노출하지 않고 설정 유무만 boolean으로 반환).
+    여부·마지막 배포(갱신) 시각·외부 API 키 설정 여부를 표시한다(키 값 자체는
+    절대 노출하지 않고 설정 유무만 boolean으로 반환).
     """
     settings = get_settings()
     return {
         "status": "ok",
         "version": {
-            "commit": _DEPLOY_COMMIT,
-            "branch": _DEPLOY_BRANCH,
+            "deployed_at": _DEPLOY_TIME,
         },
         "secrets_configured": {
             "aladin_ttb_key":      bool(settings.aladin_ttb_key),
@@ -394,10 +394,6 @@ async def health():
             "nlk_cert_key":        bool(settings.nlk_cert_key),
             "naver_search":        bool(settings.naver_search_key_id and settings.naver_search_key_secret),
             "gspread_credentials": bool(settings.gspread_credentials),
-        },
-        "features": {
-            "kpipa_enable_653": settings.kpipa_enable_653,
-            "nlk_enable_653":   settings.nlk_enable_653,
         },
     }
 
