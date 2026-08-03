@@ -34,11 +34,7 @@ else:
         "터미널에서 `uvicorn app:app --reload`로 백엔드를 먼저 실행하세요."
     )
 
-# 백엔드 주소 — 기본 캡션의 약 2배 크기
-st.markdown(
-    f'<p style="font-size:1.8em; margin:0.3rem 0;">🔗 백엔드 주소: <code>{get_backend_url()}</code></p>',
-    unsafe_allow_html=True,
-)
+st.markdown(f"🔗 백엔드 주소: `{get_backend_url()}`")
 
 version = health.get("version") or {}
 if version.get("deployed_at"):
@@ -62,10 +58,7 @@ if secrets_configured:
         ok = secrets_configured.get(key, False)
         icon = "✅" if ok else "⚠️"
         items.append(f"{icon} {label}")
-    st.markdown(
-        f'<p style="font-size:0.7em; color:gray; line-height:1.6;">{"  ·  ".join(items)}</p>',
-        unsafe_allow_html=True,
-    )
+    st.markdown("  ·  ".join(items))
 else:
     st.caption("백엔드에 연결되지 않아 확인할 수 없습니다.")
 
