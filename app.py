@@ -65,6 +65,12 @@ from core.fields.marc_653 import build_653_field
 
 logger = logging.getLogger("i2m_kormarc")
 
+# 배포 식별 정보 — Render는 빌드마다 RENDER_GIT_COMMIT/RENDER_GIT_BRANCH를 자동
+# 주입한다. 로컬 개발 환경에는 이 값이 없으므로 "local-dev"로 표시한다
+# (Streamlit Home의 "시스템 상태"에서 지금 보는 사이트가 최신 배포인지 확인용).
+_DEPLOY_COMMIT = os.environ.get("RENDER_GIT_COMMIT", "")[:7] or "local-dev"
+_DEPLOY_BRANCH = os.environ.get("RENDER_GIT_BRANCH", "") or "-"
+
 
 # ============================================================
 # Lifespan (앱 시작·종료 시 실행)
@@ -368,7 +374,32 @@ def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
 
 @app.get("/health", tags=["운영"])
 async def health():
-    return {"status": "ok"}
+    """
+    헬스체크 + 시스템 상태. Streamlit Home 페이지가 이 응답 하나로 백엔드 연결
+    여부·배포 버전·외부 API 키 설정 여부·653 opt-in 기능 활성화 여부를 모두 표시한다
+    (키 값 자체는 절대 노출하지 않고 설정 유무만 boolean으로 반환).
+    """
+    settings = get_settings()
+    return {
+        "status": "ok",
+        "version": {
+            "commit": _DEPLOY_COMMIT,
+            "branch": _DEPLOY_BRANCH,
+        },
+        "secrets_configured": {
+            "aladin_ttb_key":      bool(settings.aladin_ttb_key),
+            "openai_api_key":      bool(settings.openai_api_key),
+            "kpipa_api_key":       bool(settings.kpipa_api_key),
+            "data_go_kr":          bool(settings.data_go_kr),
+            "nlk_cert_key":        bool(settings.nlk_cert_key),
+            "naver_search":        bool(settings.naver_search_key_id and settings.naver_search_key_secret),
+            "gspread_credentials": bool(settings.gspread_credentials),
+        },
+        "features": {
+            "kpipa_enable_653": settings.kpipa_enable_653,
+            "nlk_enable_653":   settings.nlk_enable_653,
+        },
+    }
 
 
 @app.post("/api/convert", response_model=ConvertResult, tags=["MARC 변환"])
