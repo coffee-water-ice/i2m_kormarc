@@ -78,6 +78,16 @@ class Settings(BaseSettings):
         default="", description="Google 서비스 계정 JSON 문자열 (GSPREAD_CREDENTIALS)"
     )
 
+    # ── 056(KDC 분류기호) 딥러닝 모델 ──────────────────────────
+    # 모델 파일(약 1.3GB)은 저장소에 포함되지 않는다. 로컬 경로를 여기로 주입하며,
+    # 비어 있거나 경로가 없으면 056 생성만 건너뛴다(다른 필드·배포 환경은 무영향).
+    # model9/model10으로 교체할 때는 이 경로만 바꾸면 된다
+    # (「056 분류모델 개선 및 I2M 연계 추진안」 4절 "모델 경로와 버전의 설정값 분리").
+    kdc_model_dir: str = Field(default="", description="KDC 분류 모델 디렉터리 경로")
+    kdc_model_version: str = Field(
+        default="model8_large_swa", description="사용 중인 KDC 모델 버전 표시용 이름"
+    )
+
     # ── 피드백 DB ─────────────────────────────────────────────
     feedback_db_path: str = Field(default="./feedback.db", description="SQLite 피드백 DB 경로")
 

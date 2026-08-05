@@ -57,6 +57,16 @@ def _sort_mrk_lines(mrk_text: str) -> str:
     return "\n".join(sorted(lines, key=_tag_key))
 
 
+def _replace_056(mrk_text: str, kdc: str) -> str:
+    """MRK 텍스트의 056 행 $a를 사서가 고른 후보로 교체한다. 056 행이 없으면 원문 그대로."""
+    lines = (mrk_text or "").splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith("=056"):
+            lines[i] = re.sub(r"\$a\S*", f"$a{kdc}", line, count=1)
+            break
+    return "\n".join(lines)
+
+
 def _results_to_dataframe(results: list[dict]) -> pd.DataFrame:
     rows = []
     for r in results:
@@ -156,9 +166,37 @@ with tab_single:
                 label_visibility="collapsed",
             )
 
+            # ── 056 KDC 분류 후보 (딥러닝 model8) ──────────────────
+            # 모델은 KDC "강"(2자리)까지만 예측한다. 완성된 분류기호가 아니므로
+            # 후보와 확률을 함께 보여주고 사서가 고르거나 직접 고치게 한다.
+            kdc_candidates = meta.get("kdc_candidates") or []
+            final_mrk = edited_mrk
+            if kdc_candidates:
+                st.subheader("056 KDC 분류 후보")
+                if meta.get("kdc_low_confidence"):
+                    st.warning(
+                        "1순위와 2순위가 거의 대등합니다 — 사서 검토가 필요합니다. "
+                        "이 구간의 1순위 정확도는 약 58%입니다."
+                    )
+                labels = {c["kdc"]: f"{c['kdc']}  ({c['prob']:.1%})" for c in kdc_candidates}
+                chosen = st.radio(
+                    "강(2자리)까지만 예측합니다. 세목은 위 MRK 직접 수정란에서 채우세요.",
+                    [c["kdc"] for c in kdc_candidates],
+                    format_func=lambda k: labels[k],
+                    horizontal=True,
+                    key=f"kdc_pick_{result.get('isbn', '')}_{seq}",
+                )
+                # 1순위를 그대로 둔 경우에는 텍스트를 건드리지 않는다
+                # (사서가 textarea에서 세목까지 직접 채워 넣었을 수 있다).
+                if chosen != kdc_candidates[0]["kdc"]:
+                    final_mrk = _replace_056(edited_mrk, chosen)
+                st.caption(f"모델 버전: `{meta.get('kdc_model_version', '')}`")
+            elif meta.get("kdc_reason"):
+                st.caption(f"056 미생성: {meta['kdc_reason']}")
+
             # ── MRK 텍스트 — 위에서 수정한 내용을 그대로 반영 ──────
             st.subheader("MRK 텍스트")
-            st.code(edited_mrk, language="text")
+            st.code(final_mrk, language="text")
 
             source = meta.get("bundle_source", "")
             label = _SOURCE_LABEL.get(source, source or "알 수 없음")
