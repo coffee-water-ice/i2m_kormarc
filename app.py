@@ -46,7 +46,7 @@ from pydantic import BaseModel, Field
 
 # 내부 모듈 — 새 골격 경로
 from core.config import Settings, get_settings, load_streamlit_secrets_into_env
-from core.debug_log import clear_debug_lines, get_debug_lines
+from core.debug_log import clear_debug_lines, dbg_err, get_debug_lines
 from core import token_tracker
 from core.marc_builder import MarcBuilder, kormarc_tag_to_mrk, mrk_str_to_field
 from core.fields.marc_007_008 import build_007_field, build_008_field
@@ -57,12 +57,13 @@ from core.fields.marc_300 import build_300_field
 from core.fields.marc_245 import build_245_family
 from core.fields.marc_500_700_710 import build_500_700_710_900
 from api.aladin_client import get_aladin_item_by_isbn
-from api.kpipa_client import get_kpipa_book_detail
+from api.kpipa_client import get_kpipa_book_detail, extract_kpipa_toc_only
 from api.publisher_db import build_pub_location_bundle
 from database.feedback_logger import init_db, save_feedback_record
 
 from core.fields.marc_041 import build_041_546, LangFieldBuilder
 from core.fields.marc_653 import build_653_field
+from core.fields.marc_056 import build_056_field
 
 logger = logging.getLogger("i2m_kormarc")
 
@@ -171,6 +172,11 @@ def _settings_to_secrets(settings: Settings) -> dict:
     if settings.gspread_credentials:
         os.environ.setdefault("GSPREAD_CREDENTIALS", settings.gspread_credentials)
 
+    # core/kdc_model.py도 같은 방식으로 os.environ에서 모델 경로를 읽는다
+    # (필드 모듈이 core.config를 import하지 않게 두기 위함 — 원칙 #9 "행 자체 완결").
+    if settings.kdc_model_dir:
+        os.environ.setdefault("KDC_MODEL_DIR", settings.kdc_model_dir)
+
     return {
         "ALADIN_TTB_KEY":  settings.aladin_ttb_key,
         "ALADIN_TTB_KEY2": settings.aladin_ttb_key2,
@@ -193,6 +199,27 @@ def _build_openai_client(settings: Settings) -> openai.OpenAI | None:
     if not settings.openai_api_key:
         return None
     return openai.OpenAI(api_key=settings.openai_api_key, timeout=60.0)
+
+
+def _kpipa_toc_for_056(isbn: str, secrets: dict, settings: Settings) -> str:
+    """
+    알라딘 목차가 비었을 때 056 모델 입력에 쓸 KPIPA 목차.
+
+    학습 전처리(prepare_data_v8.build_text)가 알라딘_목차 결측 행에 한해 KPIPA_목차로
+    대체했으므로 추론에서도 같은 규칙을 따른다. 다만 KPIPA 호출은 653과 마찬가지로
+    opt-in(kpipa_enable_653)이며, 키가 없거나 조회에 실패하면 빈 문자열을 돌려주고
+    056은 목차 없이 진행한다.
+    """
+    if not (settings.kpipa_enable_653 and secrets.get("KPIPA_API_KEY")):
+        return ""
+    try:
+        raw, err = get_kpipa_book_detail(isbn, secrets["KPIPA_API_KEY"])
+        if err or not raw:
+            return ""
+        return extract_kpipa_toc_only(raw) or ""
+    except Exception as e:
+        dbg_err("[056] KPIPA 목차 조회 실패:", e)
+        return ""
 
 
 def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
@@ -324,6 +351,27 @@ def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
         )
         _add(tag_653)  # 실패 사유는 build_653_field 내부에서 이미 [653] 디버그 로그로 남긴다
 
+        # ── 056 (KDC 분류기호, 딥러닝 model8) ────────────────
+        # 653 키워드가 모델 입력에 포함되므로 반드시 653 이후에 실행한다
+        # (「056 분류모델 개선 및 I2M 연계 추진안」 3절). 목차는 300 처리에서 이미
+        # 확보한 값을 재사용해 알라딘 재크롤링을 피한다.
+        tag_056, diag_056 = build_056_field(
+            item,
+            tag_653=tag_653,
+            toc_text=illus_diag.get("toc_text", ""),
+            kpipa_toc=_kpipa_toc_for_056(isbn, secrets, settings),
+        )
+        if tag_056:
+            # MARC 태그 순서를 지키기 위해 append가 아니라 056보다 큰 첫 태그 앞에 끼운다.
+            pos = next(
+                (i for i, t in enumerate(all_tags) if t[1:4].isdigit() and t[1:4] > "056"),
+                len(all_tags),
+            )
+            all_tags.insert(pos, tag_056)
+            field_056 = mrk_str_to_field(tag_056)
+            if field_056:
+                builder.rec.add_field(field_056)
+
         mrk_text = "\n".join(filter(None, all_tags))
         marc_bytes = builder.rec.as_marc()
 
@@ -344,6 +392,12 @@ def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
             "tag_260": tag_260 or "",
             "tag_300": tag_300 or "",
             "tag_653": tag_653 or "",
+            "tag_056": tag_056 or "",
+            "kdc_candidates": diag_056.get("candidates", []),
+            "kdc_low_confidence": diag_056.get("low_confidence", False),
+            "kdc_margin_ratio": diag_056.get("margin_ratio"),
+            "kdc_reason": diag_056.get("reason", ""),
+            "kdc_model_version": settings.kdc_model_version,
             "category_id":   (item or {}).get("categoryId", ""),
             "category_name": (item or {}).get("categoryName", ""),
             "toc_text": illus_diag.get("toc_text", ""),
