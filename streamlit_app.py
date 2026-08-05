@@ -18,13 +18,26 @@ from api_client import check_backend_health, get_backend_url
 
 st.set_page_config(page_title="I2M KORMARC 통합 시스템", page_icon="📚", layout="wide")
 
+
+@st.cache_data(ttl=60, show_spinner="🔄️ Render 콜드 스타트 중... (최대 1분 정도 걸릴 수 있습니다)")
+def _cached_health_check() -> dict:
+    """
+    check_backend_health()를 60초간 캐싱한다. Streamlit은 페이지의 위젯을
+    조작할 때마다 스크립트 전체를 다시 실행하므로, 캐싱이 없으면 방문할
+    때마다 매번 백엔드까지 새로 왕복하게 된다 — 특히 Render 무료/스타터
+    플랜은 슬립 상태에서 깨어나는 데 수십 초가 걸릴 수 있어(콜드 스타트)
+    체감 지연이 컸다. show_spinner 문구로 그 대기 중임을 알려준다.
+    """
+    return check_backend_health()
+
+
 st.title("I2M KORMARC 통합 변환 시스템")
 st.caption("041 / 245 / 653 / 260+300 +2025년 코드 - 통합 완료, 전 필드 실동작")
 
 # ── 시스템 상태 ────────────────────────────────────────────────
 st.subheader("시스템 상태")
 
-health = check_backend_health()
+health = _cached_health_check()
 version = health.get("version") or {}
 secrets_configured = health.get("secrets_configured")
 
