@@ -9,6 +9,12 @@ NOTE(레이어링 잔재): 원본 구조를 그대로 이관해 알라딘 상세
 이 파일이 직접 수행한다(api/aladin_client.py를 거치지 않음). 골격 우선 원칙에 따라
 이번 이관에서는 재구조화하지 않고 그대로 옮겼다 — 추후 api/aladin_scraper.py로
 크롤링 부분을 옮기는 리팩터링은 별도 작업으로 남겨둔다.
+
+NOTE(삽화 판정 보강): 저자 목록에 '그림' 역할(authorTypeDesc/authorTypeName)이
+있으면 기본적으로 천연색삽화로 판정한다(_has_illustrator_author). 다만 AI가 본문에서
+흑백을 명시하는 문장을 찾아 이미 "삽화"(흑백)로 판정했다면 그 판정을 우선한다
+(_resolve_illustration_label). 041의 _has_translator_in_item()과 동일한
+"구조화된 필드 우선 → 원시 문자열 정규식 폴백" 패턴을 따른다.
 """
 
 from __future__ import annotations
@@ -32,6 +38,42 @@ _ILLUS_KEYWORD_GROUPS: dict[str, list[str]] = {
     "도표":       ["도표", "차트", "그래프"],
     "지도":       ["지도", "지도책"],
 }
+
+
+def _has_illustrator_author(item: dict) -> bool:
+    """
+    item의 저자 목록에 '그림' 역할이 있는지 확인한다.
+
+    041의 _has_translator_in_item()과 동일한 패턴 — subInfo.authors의 구조화된
+    역할(authorTypeDesc/authorTypeName)을 우선 확인하고, 없으면 원시 author
+    문자열("OOO 그림")을 정규식으로 폴백 확인한다.
+    """
+    sub = (item or {}).get("subInfo") or {}
+    for auth in sub.get("authors") or []:
+        if not isinstance(auth, dict):
+            continue
+        role = (auth.get("authorTypeDesc") or auth.get("authorTypeName") or "").strip()
+        if "그림" in role:
+            return True
+    raw = (item or {}).get("author") or ""
+    return bool(re.search(r"그림", raw))
+
+
+def _resolve_illustration_label(ai_items: list[str], has_illustrator_role: bool) -> list[str]:
+    """
+    AI가 판정한 항목 목록에 '그림' 역할 저자 신호를 반영해 최종 목록을 만든다.
+
+    저자 역할에 그림 작가가 있으면 기본적으로 천연색삽화로 본다 — 다만 AI가
+    본문(제목/책소개/목차)에서 흑백을 명시하는 문장을 찾아 이미 "삽화"(흑백)로
+    판정했다면 그 판정을 우선한다. 사진/도표/지도/악보 등 AI가 함께 감지한
+    다른 항목은 그대로 유지한다.
+    """
+    if not has_illustrator_role:
+        return list(ai_items)
+
+    others = [i for i in ai_items if i not in ("삽화", "천연색삽화")]
+    chosen = "삽화" if "삽화" in ai_items else "천연색삽화"
+    return [chosen] + others
 
 
 def detect_illustrations(text: str) -> tuple[bool, str | None]:
@@ -249,13 +291,16 @@ def _parse_aladin_categories(soup: BeautifulSoup) -> list[str]:
 
 
 def _parse_aladin_physical_info(
-    html: str, api_description: str = "", naver_description: str = "", openai_api_key: str = ""
+    html: str, api_description: str = "", naver_description: str = "", openai_api_key: str = "",
+    has_illustrator_role: bool = False,
 ) -> dict:
     """
     알라딘 상세 페이지 HTML에서 형태사항(300 필드용) 데이터를 파싱한다.
 
     api_description: 알라딘 TTB API item["description"] — 책소개 섹션이 JS 렌더링으로만
                      존재할 때(정적 HTML에 없을 때) 대체 소스로 사용.
+    has_illustrator_role: 저자 역할에 '그림'이 있는지(_has_illustrator_author) — $b 판정에
+                     반영한다(_resolve_illustration_label 참고).
 
     Returns:
         {
@@ -319,12 +364,25 @@ def _parse_aladin_physical_info(
     # 알라딘 카테고리 경로 추출
     aladin_categories = _parse_aladin_categories(soup)
 
-    # $b — 삽화 감지: AI 판정 전용 (카테고리·책소개·목차 종합)
+    # $b — 삽화 감지: AI 판정(카테고리·책소개·목차 종합) + 그림 역할 저자 신호 보정
     has_illus, illus_label, illus_detail = _detect_illustrations_with_ai(
         title_text, desc_text, toc_text, openai_api_key, categories=aladin_categories
     )
-    if has_illus:
-        b_part = illus_label  # type: ignore[assignment]
+    ai_items = illus_label.split(", ") if illus_label else []
+    resolved_items = _resolve_illustration_label(ai_items, has_illustrator_role)
+    if has_illustrator_role and resolved_items != ai_items:
+        dbg(
+            "[300] 그림 역할 저자 감지 →",
+            "AI가 흑백 신호를 명시해 삽화(흑백) 유지" if "삽화" in ai_items
+            else "천연색삽화로 보정",
+        )
+        illus_detail = [
+            {"label": resolved_items[0], "keyword": "(저자 역할: 그림)", "source": "저자정보"}
+        ] + [d for d in illus_detail if d.get("label") != resolved_items[0]]
+    if resolved_items:
+        has_illus = True
+        illus_label = ", ".join(resolved_items)
+        b_part = illus_label
 
     # ---- pymarc Subfield 리스트 구성 ----
     subfields_300: list[Subfield] = []
@@ -383,7 +441,8 @@ def _parse_aladin_physical_info(
 
 
 def _fetch_aladin_detail_page(
-    link: str, api_description: str = "", naver_description: str = "", openai_api_key: str = ""
+    link: str, api_description: str = "", naver_description: str = "", openai_api_key: str = "",
+    has_illustrator_role: bool = False,
 ) -> tuple[dict, str | None]:
     """
     알라딘 상세 페이지를 HTTP로 가져와 형태사항 dict를 반환한다.
@@ -405,7 +464,10 @@ def _fetch_aladin_detail_page(
         res = requests.get(link, headers=_HEADERS, timeout=15)
         res.raise_for_status()
         res.encoding = "utf-8"
-        return _parse_aladin_physical_info(res.text, api_description, naver_description, openai_api_key), None
+        return _parse_aladin_physical_info(
+            res.text, api_description, naver_description, openai_api_key,
+            has_illustrator_role=has_illustrator_role,
+        ), None
     except Exception as e:
         return {
             "300": "=300  \\\\$a1책. [상세 페이지 파싱 오류]",
@@ -459,11 +521,16 @@ def build_300_field(item: dict, isbn: str = "", secrets: dict | None = None) -> 
                 tag="300", indicators=["\\", "\\"], subfields=_FALLBACK_SF
             ), _EMPTY_DIAG
 
+        has_illustrator_role = _has_illustrator_author(item)
+        if has_illustrator_role:
+            dbg("[300] 저자 역할에 '그림' 확인 → 삽화 판정에 반영")
+
         detail_result, err = _fetch_aladin_detail_page(
             aladin_link,
             api_description=api_description,
             naver_description=naver_description,
             openai_api_key=openai_api_key,
+            has_illustrator_role=has_illustrator_role,
         )
 
         tag_300       = detail_result.get("300")           or _FALLBACK_MRK
