@@ -131,14 +131,15 @@ with tab_single:
                     unsafe_allow_html=True,
                 )
 
-            # ── 직접 수정 파트 (별도 이름 없이, 태그 오름차순 정렬 상태로 표시) ──
-            # 기본 글자 크기가 너무 작다는 피드백에 따라 이 textarea만 1.3배로 키운다
+            # ── 직접 수정 파트 (태그 오름차순 정렬 상태로 표시) ──
+            # 1.3배로 키웠다가 다시 그 크기의 80% 수준(1.3*0.8=1.04배)으로 축소
             # (aria-label로 범위를 좁혀 일괄 변환 탭의 ISBN 목록 textarea는 영향받지 않는다).
+            st.subheader("MRK 직접 수정")
             st.markdown(
                 """
                 <style>
                 textarea[aria-label="MRK 직접 수정"] {
-                    font-size: 1.3em !important;
+                    font-size: 1.04em !important;
                     line-height: 1.4 !important;
                 }
                 </style>

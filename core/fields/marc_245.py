@@ -588,6 +588,9 @@ def build_940(title: str) -> str | None:
             ko_num = "".join(_ENG_DIGIT_KO.get(c, c) for c in mixed.group(1))
             ko_let = "".join(_ENG_LETTER_KO.get(c.upper(), c) for c in mixed.group(2))
             return ko_num + ko_let
+        m_percent = re.match(r'^(\d+)\s?%$', token)
+        if m_percent:
+            return _arabic_to_korean(int(m_percent.group(1))) + "퍼센트"
         m_counter = re.match(r'^(\d+)(\s?)(' + _NATIVE_COUNTER_RX + r')$', token)
         if m_counter:
             num_part, space, counter = m_counter.group(1), m_counter.group(2), m_counter.group(3)
@@ -600,7 +603,7 @@ def build_940(title: str) -> str | None:
         return "".join(_ENG_LETTER_KO.get(c.upper(), c) for c in token)
 
     result = re.sub(
-        r'[A-Za-z]+|\d+[A-Za-z]+|\d+\s?(?:' + _NATIVE_COUNTER_RX + r')|\d+',
+        r'[A-Za-z]+|\d+[A-Za-z]+|\d+\s?%|\d+\s?(?:' + _NATIVE_COUNTER_RX + r')|\d+',
         _replace, t,
     )
     if not has_change:
