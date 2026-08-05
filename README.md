@@ -52,7 +52,7 @@ pip install -r requirements.txt
 
 로컬 실행에 필요한 실제 키(알라딘/OpenAI/KPIPA/행안부/NLK/GSPREAD)는 `.env.example`을
 참고해 이 저장소 **바깥**(부모 폴더, `i2m_kormarc/`와 같은 위치가 아니라 그 한 단계 위)에
-`i2m_2026.env` 파일로 채워 넣는다(`core/config.py`의 `_ENV_FILE` 경로 참고). 저장소 바깥에
+`i2m_kormarc_2026_api_keys.env` 파일로 채워 넣는다(`core/config.py`의 `_ENV_FILE` 경로 참고). 저장소 바깥에
 두므로 실수로 git에 커밋될 일이 없다. Render/Streamlit Cloud 등 배포 환경은 이 파일 없이
 대시보드에 등록된 환경변수/secrets.toml을 그대로 쓴다.
 
@@ -79,7 +79,7 @@ pip install transformers
 ```
 
 ```ini
-# 2) i2m_2026.env 에 모델 폴더 경로
+# 2) i2m_kormarc_2026_api_keys.env 에 모델 폴더 경로
 KDC_MODEL_DIR=<딥러닝팀에게 받은 kdc_model8_large_swa 폴더 경로>
 KDC_MODEL_VERSION=model8_large_swa
 ```

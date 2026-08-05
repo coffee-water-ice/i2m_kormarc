@@ -48,7 +48,10 @@ if health["ok"]:
 else:
     st.markdown(f'⛔ "{health["detail"]}"')
 if version.get("deployed_at"):
-    st.markdown(f"🔄️ 마지막 배포(갱신) 시각: {version['deployed_at']} (KST) · 커밋: `{version.get('commit', '?')}`")
+    commit = version.get("commit", "?")
+    commit_msg = version.get("commit_message", "")
+    commit_display = f"{commit}: {commit_msg}" if commit_msg else commit
+    st.markdown(f"🔄️ 마지막 배포(갱신) 시각: {version['deployed_at']} (KST) · 커밋: `{commit_display}`")
 
 st.markdown("**외부 API 키 설정 여부**")
 if secrets_configured:

@@ -34,9 +34,11 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import subprocess
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional
 
 import openai
@@ -67,14 +69,48 @@ from core.fields.marc_056 import build_056_field
 
 logger = logging.getLogger("i2m_kormarc")
 
-# 배포(갱신) 시각/커밋 — 프로세스가 시작될 때(Render는 배포마다 재시작) 한 번만
-# 계산해 둔다. 시각은 서버 시간대와 무관하게 항상 한국시간(KST, UTC+9)으로 고정
-# 표시한다. 커밋은 Render가 빌드마다 자동 주입하는 RENDER_GIT_COMMIT을 쓰고,
-# 로컬 개발 환경에는 이 값이 없으므로 "local-dev"로 표시한다
-# (Streamlit Home의 "시스템 상태"에서 마지막 배포가 언제·어느 커밋인지 확인용).
+# ── 배포(갱신) 시각/커밋 — 모듈 로드 시 한 번만 계산 ──────────────────
+#
+# 처음엔 "프로세스 시작 시각"(datetime.now())을 썼는데, Render 무료 플랜은
+# 15분 무요청 시 슬립했다가 다음 요청에서 다시 깨어날 때도 프로세스가 재시작된다
+# — 실제 코드 배포가 아닌 단순 콜드 스타트 재기동인데도 "방금 배포됨"처럼
+# 보이는 문제가 있었다. 그래서 프로세스 재시작마다 바뀌지 않고, 실제 빌드
+# 시점에만 바뀌는 "이 파일(app.py)의 최종 수정시각(mtime)"으로 바꿨다 — Render가
+# 배포마다 저장소를 새로 체크아웃해서 이미지를 빌드하므로, 이 mtime은 곧 그
+# 체크아웃(=배포) 시각이고 이후 콜드 스타트로 프로세스만 재시작돼도 파일을 다시
+# 쓰지 않는 한 그대로 유지된다. 로컬 개발 환경에서도 "app.py를 마지막으로 저장한
+# 시각"이라는 나름 의미 있는 값이 된다.
 _KST = timezone(timedelta(hours=9))
-_DEPLOY_TIME = datetime.now(_KST).strftime("%Y-%m-%d %H:%M:%S")
+_DEPLOY_TIME = datetime.fromtimestamp(
+    os.path.getmtime(__file__), tz=_KST
+).strftime("%Y-%m-%d %H:%M:%S")
+
+# 커밋 해시는 Render가 빌드마다 자동 주입하는 RENDER_GIT_COMMIT을 쓰고,
+# 로컬 개발 환경에는 이 값이 없으므로 "local-dev"로 표시한다.
 _DEPLOY_COMMIT = os.environ.get("RENDER_GIT_COMMIT", "")[:7] or "local-dev"
+
+
+def _detect_commit_message() -> str:
+    """
+    배포된 커밋의 메시지(제목 줄)를 로컬 저장소(.git)에서 조회한다. Render는
+    커밋 메시지를 환경변수로 주지 않으므로, 빌드 시 함께 포함되는 .git 디렉터리에
+    직접 물어본다. git이 없거나 .git이 빠져 있으면(빌드 환경에 따라 다를 수 있음)
+    조용히 빈 문자열을 반환한다 — 다른 시스템 상태 항목에는 영향 없다.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "log", "-1", "--format=%s"],
+            capture_output=True, text=True, timeout=5,
+            cwd=Path(__file__).resolve().parent,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return ""
+
+
+_DEPLOY_COMMIT_MSG = _detect_commit_message()
 
 
 # ============================================================
@@ -443,6 +479,7 @@ async def health():
         "version": {
             "deployed_at": _DEPLOY_TIME,
             "commit": _DEPLOY_COMMIT,
+            "commit_message": _DEPLOY_COMMIT_MSG,
         },
         "secrets_configured": {
             "aladin_ttb_key":      bool(settings.aladin_ttb_key),
