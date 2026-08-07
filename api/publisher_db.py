@@ -63,6 +63,62 @@ def split_publisher_aliases(name: str) -> tuple[str, list[str]]:
     return name_no_brackets, aliases
 
 
+_ENG_PAREN_HINT_RE = re.compile(r"([A-Za-z]+)\(([가-힣]+)\)")
+# \b는 파이썬 정규식에서 한글도 "단어 문자"로 취급해 "AK커뮤니케이션즈"처럼 영문 뒤에
+# 곧장 한글이 붙으면 경계가 안 생긴다 — 그래서 \b 대신 앞뒤에 라틴 문자가 없는지를
+# 직접 검사한다(뒤에 소문자가 오면 "Abcdef" 같은 일반 단어의 일부일 수 있으니 제외).
+_ALL_CAPS_RUN_RE = re.compile(r"(?<![A-Za-z])[A-Z]{2,}(?![a-z])")
+
+# 알파벳 한 글자씩의 한글 표기 — 영문 약어(예: "AK")를 음차로 풀어 쓸 때만 쓴다.
+# 소문자·일반 영단어는 실제 발음 규칙이 필요해 이 표로 다루지 않는다(오탐 위험).
+_ALPHABET_KOR = {
+    "A": "에이", "B": "비", "C": "씨", "D": "디", "E": "이", "F": "에프",
+    "G": "지", "H": "에이치", "I": "아이", "J": "제이", "K": "케이", "L": "엘",
+    "M": "엠", "N": "엔", "O": "오", "P": "피", "Q": "큐", "R": "알",
+    "S": "에스", "T": "티", "U": "유", "V": "브이", "W": "더블유", "X": "엑스",
+    "Y": "와이", "Z": "지",
+}
+
+
+def _spell_out_acronym(letters: str) -> str:
+    return "".join(_ALPHABET_KOR.get(ch.upper(), ch) for ch in letters)
+
+
+def build_transliterated_variants(name: str) -> list[str]:
+    """
+    출판사명에 포함된 영문을 한글 음차로 바꾼 대체 이름 후보를 만든다.
+
+    예: "AK(에이케이)커뮤니케이션즈" → ["에이케이커뮤니케이션즈"]
+        (실제 사례 — 알라딘 출판사명이 원래 이 형태를 그대로 반환하는데,
+         기존 검색 체인은 괄호 안 음차를 버리고 "AK커뮤니케이션즈"로만
+         검색해 KPIPA DB/행안부 API 매칭에 실패했다.)
+
+    1순위: "영문(한글음차)" 패턴이 있으면 그 음차를 그대로 쓴다 — 알라딘이
+           이미 제공하는 정확한 표기라 가장 신뢰도가 높다.
+    2순위: 괄호 힌트가 없고 대문자 약어(2자 이상 연속 대문자, 예: "AK"/"SF")가
+           있으면 알파벳 이름을 한 글자씩 이어붙여 만든다(예: "AK" → "에이케이").
+
+    반환값이 빈 리스트면 영문이 없거나 변환할 게 없다는 뜻.
+    """
+    if not name or not re.search(r"[A-Za-z]", name):
+        return []
+
+    variants: list[str] = []
+
+    hinted, n = _ENG_PAREN_HINT_RE.subn(r"\2", name)
+    if n > 0 and hinted != name:
+        variants.append(hinted)
+
+    if not variants:
+        spelled, n2 = _ALL_CAPS_RUN_RE.subn(
+            lambda m: _spell_out_acronym(m.group(0)), name
+        )
+        if n2 > 0 and spelled != name:
+            variants.append(spelled)
+
+    return variants
+
+
 def normalize_publisher_location_for_display(location_name: str) -> str:
     """
     주소 문자열을 KORMARC 260 $a 표시용 지역명으로 변환한다.
@@ -400,6 +456,31 @@ def build_pub_location_bundle(isbn: str, publisher_name_raw: str, secrets: dict)
                     source = "ALADIN→IMPRINT→MOIS"
                     if imprint_main:
                         secondary_publisher = imprint_main
+
+        # [6] 영문 포함 출판사명 → 음차 변형으로 재검색
+        # 예: "AK(에이케이)커뮤니케이션즈"는 KPIPA DB/행안부 API에 "AK커뮤니케이션즈"로는
+        # 없고 "에이케이커뮤니케이션즈"로 등록돼 있는 경우가 있다 — 실사례로 확인됨.
+        if place_raw in _UNKNOWN:
+            for variant in build_transliterated_variants(aladin_rep):
+                debug.append(f"[음차 재시도] {aladin_rep} → {variant}")
+
+                place_raw, msgs = search_publisher_location_with_alias(variant, publisher_data)
+                debug += msgs
+                if place_raw not in _UNKNOWN:
+                    resolved = variant
+                    source = "ALADIN(음차)→DB"
+                    secondary_publisher = aladin_rep
+                    break
+
+                mois_key = (secrets or {}).get("DATA_GO_KR", "")
+                mois_addr, mois_debug = get_mois_publisher_address(variant, mois_key)
+                debug += mois_debug
+                if mois_addr:
+                    place_raw = mois_addr
+                    resolved = variant
+                    source = "ALADIN(음차)→MOIS"
+                    secondary_publisher = aladin_rep
+                    break
 
         # 최종 fallback
         if not place_raw or place_raw in _UNKNOWN:
