@@ -14,6 +14,15 @@ pages/2_2025년_코드_원본.py
   원본 코드가 원래 하던 대로, 알라딘/OpenAI/구글시트 등 외부 API를 이 Streamlit
   프로세스 안에서 직접 호출한다(api_client.py 미사용).
 
+파일 경로 이원화(로컬 원본 우선, 배포 환경은 저장소 내 사본):
+  `통합 이전 코드/2025년 코드/`는 i2m_kormarc 저장소 바깥의 형제 폴더라 git에
+  포함되지 않는다. Render/Streamlit Cloud 등은 이 저장소만 클론하므로 그 경로가
+  아예 존재하지 않아 이 페이지가 동작할 수 없다. 그래서:
+    1) 로컬에 진짜 원본(`통합 이전 코드/2025년 코드/1215_main.py`)이 있으면 그걸 우선 실행한다.
+    2) 없으면(배포 환경) `legacy_2025_code/1215_main.py`(원본의 바이트 단위 복사본,
+       이 저장소 안에 커밋되어 있음)를 실행한다.
+  두 경로 모두 내용은 100% 동일하다 — legacy_2025_code/README.md 참고.
+
 실행에 필요한 비밀키:
   원본 코드는 os.getenv(...) 우선, 없으면 st.secrets로 폴백하되, 구글시트
   연동(st.secrets["gspread"])과 일부 알라딘 조회(st.secrets["aladin"]["ttbkey"])는
@@ -48,20 +57,36 @@ st.caption(
 )
 st.divider()
 
-_LEGACY_PATH = (
+# 1순위: 로컬 원본(진짜 소스) — 있으면 항상 이걸 쓴다(사본의 동기화 누락 위험 없음).
+_ORIGINAL_PATH = (
     Path(__file__).resolve().parents[2]
     / "통합 이전 코드"
     / "2025년 코드"
     / "1215_main.py"
 )
+# 2순위: 저장소 내 바이트 단위 복사본 — 배포 환경(로컬 원본이 존재하지 않는 곳)용.
+_COPY_PATH = Path(__file__).resolve().parents[1] / "legacy_2025_code" / "1215_main.py"
 
-if not _LEGACY_PATH.exists():
-    st.error(f"원본 파일을 찾을 수 없습니다: {_LEGACY_PATH}")
+if _ORIGINAL_PATH.exists():
+    _LEGACY_PATH = _ORIGINAL_PATH
+    _source_label = "로컬 원본"
+elif _COPY_PATH.exists():
+    _LEGACY_PATH = _COPY_PATH
+    _source_label = "저장소 내 사본(legacy_2025_code/)"
+else:
+    st.error("원본 파일을 찾을 수 없습니다.")
     st.info(
-        "이 페이지는 `I2M 통합 코드/통합 이전 코드/2025년 코드/1215_main.py`가 "
-        "i2m_kormarc와 같은 저장소 상위 경로에 있어야 동작합니다."
+        f"다음 두 경로 모두에 파일이 없습니다:\n"
+        f"- 로컬 원본: `{_ORIGINAL_PATH}`\n"
+        f"- 저장소 내 사본: `{_COPY_PATH}`"
     )
     st.stop()
+
+st.caption(f"실행 소스: {_source_label} (`{_LEGACY_PATH}`)")
+
+# 원본 폴더에 __pycache__/*.pyc가 생기는 부수 효과를 막는다(원본은 읽기 전용으로만
+# 다뤄야 한다 — .pyc는 소스를 바꾸진 않지만, 폴더에 아무 파일도 새로 만들지 않는 게 원칙).
+sys.dont_write_bytecode = True
 
 # 원본 파일을 있는 그대로, 정식 모듈 로딩 방식으로 실행한다 — 읽기만 하고
 # 한 글자도 바꾸지 않는다. importlib을 쓰는 이유: 원본이 @dataclass를 쓰는데,
