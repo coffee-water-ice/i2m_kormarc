@@ -28,13 +28,13 @@
   `POST /api/convert/batch`, `GET /api/kpipa/{isbn}`, `POST /api/feedback`,
   `GET /health`)과 "ISBN 입력 → MARC 변환" 흐름 요약이 이미 문장 형태로 있어 그대로
   참고 가능.
-- `i2m_kormarc/pages/1_ISBN_변환.py` — 사서가 실제로 ISBN을 입력해서 결과를 받는 화면.
+- `i2m_kormarc/pages/1_2026_ISBN_변환.py` — 사서가 실제로 ISBN을 입력해서 결과를 받는 화면.
   "이용 절차"를 그림/흐름도로 그릴 때 이 파일의 입력→호출→결과표시 순서를 따라가면 됨.
 - 상태: ✅ 실동작.
 
 ### 나. 프론트엔드와 백엔드의 구성
 
-- 프론트엔드: `streamlit_app.py`(상태 대시보드) + `pages/1_ISBN_변환.py`(변환 UI, 단건/일괄).
+- 프론트엔드: `streamlit_app.py`(상태 대시보드) + `pages/1_2026_ISBN_변환.py`(변환 UI, 단건/일괄).
 - 연결: `api_client.py` — 프론트가 백엔드 FastAPI를 호출하는 HTTP 클라이언트.
 - 백엔드: `app.py` — FastAPI 오케스트레이터. `lifespan()`에서 시크릿 로드(`core.config.load_streamlit_secrets_into_env`)와 DB 초기화(`database.feedback_logger.init_db`)를 수행.
 - 상태: ✅ 실동작. (원 245/653 폴더는 Flask/FastAPI+Streamlit이 각자 따로 있었는데, 통합 후 프론트는 Streamlit 하나, 백엔드는 FastAPI 하나로 일원화됐다는 점을 "신I2M 변경점"으로 쓸 수 있음.)

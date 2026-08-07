@@ -106,7 +106,9 @@ i2m_kormarc/
 ├── app.py                       # FastAPI 오케스트레이터
 ├── streamlit_app.py             # Streamlit Home(상태 대시보드)
 ├── pages/
-│   └── 1_ISBN_변환.py           # 실제 변환 UI (단건/일괄)
+│   ├── 1_2026_ISBN_변환.py      # 실제 변환 UI (단건/일괄)
+│   └── 2_2025_I2M.py            # 2025년 코드(원본) 비교 페이지
+├── legacy_2025_code/            # 2025년 코드 원본의 배포용 사본 (수정 금지)
 ├── api_client.py                # 프론트 → 백엔드 HTTP 클라이언트
 ├── core/
 │   ├── config.py                # pydantic-settings 통합 설정

@@ -1,8 +1,8 @@
 """
-pages/2_2025년_코드_원본.py
+pages/2_2025_I2M.py
 "통합 이전 코드 > 2025년 코드"(1215_main.py, 5284줄) 원본을 그대로 구동하는 비교용 페이지.
 
-목적: 새로 통합된 파이프라인(1_ISBN_변환.py + FastAPI 백엔드)과 원본 2025년 코드가
+목적: 새로 통합된 파이프라인(1_2026_ISBN_변환.py + FastAPI 백엔드)과 원본 2025년 코드가
 같은 ISBN에 대해 어떤 MARC 결과를 내는지 나란히 비교하기 위함.
 
 절대 원칙(사용자 지시):
@@ -48,7 +48,7 @@ import streamlit as st
 st.set_page_config(
     page_title="2025년 코드(원본) | I2M KORMARC", page_icon="🗄️", layout="wide"
 )
-st.title("2025년 코드 (원본, 비교용)")
+st.title("2025년 I2M 시스템 (비교용)")
 st.caption(
     "통합 이전 '2025년 코드'(1215_main.py, 5284줄)를 수정 없이 그대로 실행합니다. "
     "새 통합 파이프라인(← ISBN 변환 페이지)과의 결과 차이를 비교하는 용도입니다. "
