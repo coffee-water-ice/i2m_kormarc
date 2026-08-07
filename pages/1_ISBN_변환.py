@@ -33,6 +33,8 @@ _SOURCE_LABEL = {
     "ALADIN→DB":           "📚 알라딘 → 발행처명-주소 연결표",
     "ALADIN→IMPRINT→DB":   "📚 알라딘 → 임프린트 → 발행처명-주소 연결표",
     "ALADIN→IMPRINT→MOIS": "🏛️ 알라딘 → 임프린트 → 행정안전부 API",
+    "ALADIN(음차)→DB":      "🔤 알라딘(영문→한글 음차) → 발행처명-주소 연결표",
+    "ALADIN(음차)→MOIS":    "🔤 알라딘(영문→한글 음차) → 행정안전부 API",
     "FALLBACK":            "⚠️ 모든 경로 실패 (출판지 미상)",
 }
 
