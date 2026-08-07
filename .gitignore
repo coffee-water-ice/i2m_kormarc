@@ -7,3 +7,6 @@ __pycache__/
 *.db
 *.sqlite3
 *.log
+
+# 2025년 코드(원본) 비교 페이지가 run_and_export()에서 만드는 산출물
+/output/
