@@ -460,6 +460,9 @@ def build_pub_location_bundle(isbn: str, publisher_name_raw: str, secrets: dict)
         # [6] 영문 포함 출판사명 → 음차 변형으로 재검색
         # 예: "AK(에이케이)커뮤니케이션즈"는 KPIPA DB/행안부 API에 "AK커뮤니케이션즈"로는
         # 없고 "에이케이커뮤니케이션즈"로 등록돼 있는 경우가 있다 — 실사례로 확인됨.
+        # secondary_publisher는 여기서 세팅하지 않는다 — 음차 변형은 검색용 문자열일 뿐,
+        # 알라딘명과 실질적으로 같은 발행처라 260 $b에 별도 항목으로 중복 표시할 이유가 없다
+        # (다른 단계의 secondary_publisher는 임프린트/KPIPA 등 "실제로 다른 이름"을 의미한다).
         if place_raw in _UNKNOWN:
             for variant in build_transliterated_variants(aladin_rep):
                 debug.append(f"[음차 재시도] {aladin_rep} → {variant}")
@@ -469,7 +472,6 @@ def build_pub_location_bundle(isbn: str, publisher_name_raw: str, secrets: dict)
                 if place_raw not in _UNKNOWN:
                     resolved = variant
                     source = "ALADIN(음차)→DB"
-                    secondary_publisher = aladin_rep
                     break
 
                 mois_key = (secrets or {}).get("DATA_GO_KR", "")
@@ -479,7 +481,6 @@ def build_pub_location_bundle(isbn: str, publisher_name_raw: str, secrets: dict)
                     place_raw = mois_addr
                     resolved = variant
                     source = "ALADIN(음차)→MOIS"
-                    secondary_publisher = aladin_rep
                     break
 
         # 최종 fallback
