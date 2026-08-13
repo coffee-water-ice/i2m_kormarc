@@ -11,7 +11,13 @@ pages/3_평가시스템.py
 - 이 페이지는 완전히 새로 추가하는 파일이다 — i2m_kormarc의 기존 코드
   (1_2026_ISBN_변환.py, 2_2025_I2M.py, api_client.py, core/, legacy_2025_code/1215_main.py 등)와
   "통합 이전 코드" 폴더는 단 한 글자도 수정하지 않는다.
-  - 고도화 I2M: 기존 api_client.convert_batch()를 그대로 호출한다(1_2026_ISBN_변환.py와 동일).
+  - 고도화 I2M: api_client.convert_isbn()(단건 변환, page1의 "단건 변환" 탭과 동일 경로)을
+    ISBN마다 한 번씩 호출한다. 처음엔 convert_batch()로 10건씩 묶었었는데, 실측 결과 150건
+    배치에서 초반 청크부터 바로 에러가 났다 — 백엔드 /api/convert/batch가 10건을 완전
+    순차 처리(app.py의 병렬 없는 리스트 컴프리헨션)라 10건 처리 시간이 Render 앞단
+    프록시의 요청 타임아웃(클라이언트 쪽 240초×10=2400초보다 훨씬 짧은, 보통 1~2분대로
+    추정)을 넘겨서 프록시가 먼저 연결을 끊는 것으로 보인다. 건별 호출은 이미 단건 변환
+    탭에서 안정적으로 쓰이고 있어 이 문제가 없다.
   - 기존 I2M: legacy_2025_code/1215_main.py(원본)의 run_and_export()를 읽기 전용으로
     임포트해서 그대로 재사용한다. 경로 이원화(로컬 원본 우선 → 저장소 내 사본 폴백) 규칙은
     2_2025_I2M.py와 동일하되, sys.modules 키 이름을 다르게 써서(legacy_2025_code_eval)
@@ -47,7 +53,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from api_client import convert_batch
+from api_client import convert_isbn
 
 st.set_page_config(page_title="평가 시스템 | I2M KORMARC", page_icon="🧪", layout="wide")
 st.title("I2M 평가 시스템")
@@ -337,15 +343,14 @@ if st.button("생성 실행", type="primary", disabled=not unique_isbns):
     results: list[tuple[str, str, str]] = []
 
     if system.startswith("고도화"):
-        chunk_size = 10
-        for i in range(0, total, chunk_size):
-            chunk = unique_isbns[i : i + chunk_size]
-            end = min(i + chunk_size, total)
-            status.text(f"{i + 1} ~ {end} / {total} 생성 중... (고도화 I2M)")
-            jobs = [[isbn] for isbn in chunk]
-            for r in convert_batch(jobs):
-                results.append((r.get("isbn", ""), r.get("mrk_text", ""), r.get("error") or ""))
-            progress.progress(end / total, text=f"{end}/{total} 완료")
+        # ISBN마다 개별 HTTP 요청(convert_isbn)을 보낸다 — 10건씩 convert_batch()로 묶으면
+        # 백엔드가 그 10건을 완전 순차 처리하는 동안 Render 앞단 프록시의 요청 타임아웃을
+        # 넘겨 연결이 끊기는 문제가 실측으로 확인됐다(위 모듈 docstring 참고).
+        for i, isbn in enumerate(unique_isbns, start=1):
+            status.text(f"{i} / {total} 생성 중... (고도화 I2M)")
+            r = convert_isbn(isbn)
+            results.append((r.get("isbn", isbn), r.get("mrk_text", ""), r.get("error") or ""))
+            progress.progress(i / total, text=f"{i}/{total} 완료")
     else:
         legacy_module, source_label = _get_legacy_module()
         st.caption(f"실행 소스: {source_label}")
