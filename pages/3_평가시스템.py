@@ -11,7 +11,13 @@ pages/3_평가시스템.py
 - 이 페이지는 완전히 새로 추가하는 파일이다 — i2m_kormarc의 기존 코드
   (1_2026_ISBN_변환.py, 2_2025_I2M.py, api_client.py, core/, legacy_2025_code/1215_main.py 등)와
   "통합 이전 코드" 폴더는 단 한 글자도 수정하지 않는다.
-  - 고도화 I2M: 기존 api_client.convert_batch()를 그대로 호출한다(1_2026_ISBN_변환.py와 동일).
+  - 고도화 I2M: api_client.convert_isbn()(단건 변환, page1의 "단건 변환" 탭과 동일 경로)을
+    ISBN마다 한 번씩 호출한다. 처음엔 convert_batch()로 10건씩 묶었었는데, 실측 결과 150건
+    배치에서 초반 청크부터 바로 에러가 났다 — 백엔드 /api/convert/batch가 10건을 완전
+    순차 처리(app.py의 병렬 없는 리스트 컴프리헨션)라 10건 처리 시간이 Render 앞단
+    프록시의 요청 타임아웃(클라이언트 쪽 240초×10=2400초보다 훨씬 짧은, 보통 1~2분대로
+    추정)을 넘겨서 프록시가 먼저 연결을 끊는 것으로 보인다. 건별 호출은 이미 단건 변환
+    탭에서 안정적으로 쓰이고 있어 이 문제가 없다.
   - 기존 I2M: legacy_2025_code/1215_main.py(원본)의 run_and_export()를 읽기 전용으로
     임포트해서 그대로 재사용한다. 경로 이원화(로컬 원본 우선 → 저장소 내 사본 폴백) 규칙은
     2_2025_I2M.py와 동일하되, sys.modules 키 이름을 다르게 써서(legacy_2025_code_eval)
@@ -35,19 +41,33 @@ CSV 컬럼 구성:
   자체로 반복되면(700/710/653 등 다권/다저자) " ; "로 이어붙인다. 020만 예외적으로 반복
   발생 시 첫 번째는 020 계열 고정 컬럼, 두 번째는 "02010$a" 고정 컬럼(세트 ISBN 등)에
   각각 담는다 — 첨부 파일의 실제 값(세트 ISBN이 "02010$a"에 들어있음)을 보고 역산한 규칙.
+
+중간 결과 저장(체크포인트):
+- 150건 실행 도중 Streamlit 세션/브라우저 연결이 끊기면 그동안 만든 결과가 통째로
+  날아가는 문제가 있어서 추가했다. ISBN 한 건이 끝날 때마다 결과를 output/eval_checkpoints/
+  아래 JSONL 파일에 즉시 append + fsync한다(메모리에만 쌓다가 맨 끝에 CSV로 뽑는 방식이면
+  중간에 죽었을 때 아무것도 못 건진다). 파일명은 (시스템, ISBN 목록) 해시로 정해지므로,
+  같은 입력으로 "생성 실행"을 다시 누르면 이미 끝난 건은 자동으로 건너뛰고 이어서 처리한다.
+  화면 상단 "저장된 실행 결과"에서 실행 중이 아니어도 지금까지의 결과를 CSV로 내려받거나
+  지울 수 있다. CSV의 컬럼 구성(정규화 규칙)은 완료 시 다운로드와 동일하게 _normalize_row/
+  _build_dataframe을 그대로 재사용한다.
 """
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import json
+import os
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
-from api_client import convert_batch
+from api_client import convert_isbn
 
 st.set_page_config(page_title="평가 시스템 | I2M KORMARC", page_icon="🧪", layout="wide")
 st.title("I2M 평가 시스템")
@@ -214,6 +234,95 @@ def _build_dataframe(rows: list[dict[str, str]]) -> pd.DataFrame:
     return pd.DataFrame([{h: row.get(h, "") for h in all_headers} for row in rows])
 
 
+def _to_csv_bytes(df: pd.DataFrame) -> bytes:
+    return df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+
+
+# ══════════════════════════════════════════════════════════════
+# 중간 결과 저장(체크포인트) — output/eval_checkpoints/*.jsonl
+# ══════════════════════════════════════════════════════════════
+
+CHECKPOINT_DIR = Path(__file__).resolve().parents[1] / "output" / "eval_checkpoints"
+_SYSTEM_SLUG = {"고도화": "advanced", "기존": "legacy"}
+
+
+def _system_slug(system_label: str) -> str:
+    return _SYSTEM_SLUG["고도화"] if system_label.startswith("고도화") else _SYSTEM_SLUG["기존"]
+
+
+def _checkpoint_path(system_label: str, isbns: list[str]) -> Path:
+    """(시스템, ISBN 목록)이 같으면 항상 같은 파일을 가리키게 한다 — 그래야 같은 입력으로
+    "생성 실행"을 다시 눌렀을 때 이전 체크포인트를 찾아 이어서 처리할 수 있다."""
+    key_src = _system_slug(system_label) + "|" + ",".join(sorted(isbns))
+    digest = hashlib.sha1(key_src.encode("utf-8")).hexdigest()[:12]
+    return CHECKPOINT_DIR / f"{_system_slug(system_label)}_{len(isbns)}건_{digest}.jsonl"
+
+
+def _init_checkpoint(path: Path, system_label: str, total: int) -> None:
+    """파일이 없을 때만 메타 정보(1번째 줄)를 써서 새로 만든다. 이미 있으면(이어서 진행하는
+    상황) 손대지 않는다."""
+    if path.exists():
+        return
+    CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+    meta = {
+        "meta": {
+            "system": system_label,
+            "total": total,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+        }
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(json.dumps(meta, ensure_ascii=False) + "\n")
+
+
+def _load_checkpoint(path: Path) -> tuple[dict | None, dict[str, dict]]:
+    """저장된 중간 결과를 읽는다. (메타 정보, {isbn: {"mrk_text","error"}}) 반환.
+    파일이 없으면 (None, {})."""
+    meta = None
+    done: dict[str, dict] = {}
+    if not path.exists():
+        return meta, done
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if "meta" in rec:
+                meta = rec["meta"]
+            elif "isbn" in rec:
+                done[rec["isbn"]] = rec
+    return meta, done
+
+
+def _append_checkpoint(path: Path, isbn: str, mrk_text: str, error: str) -> None:
+    """ISBN 한 건이 끝나는 즉시 디스크에 기록 + fsync. 세션이 중간에 끊기거나 죽어도
+    여기까지 처리된 결과는 남아서, 다음에 같은 입력으로 다시 실행하면 이어서 처리된다."""
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps({"isbn": isbn, "mrk_text": mrk_text, "error": error}, ensure_ascii=False) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def _list_checkpoints() -> list[Path]:
+    if not CHECKPOINT_DIR.exists():
+        return []
+    return sorted(CHECKPOINT_DIR.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+def _checkpoint_dataframe(path: Path) -> pd.DataFrame:
+    """체크포인트에 지금까지 저장된 결과를(진행 중이든 완료든) 그 자리에서 정규화 CSV로 만든다."""
+    _, done = _load_checkpoint(path)
+    rows = [
+        _normalize_row(no, rec["isbn"], rec.get("mrk_text", ""), rec.get("error") or "")
+        for no, rec in enumerate(done.values(), start=1)
+    ]
+    return _build_dataframe(rows)
+
+
 # ══════════════════════════════════════════════════════════════
 # 기존 I2M(2025년 코드 원본) 읽기 전용 로딩
 # ══════════════════════════════════════════════════════════════
@@ -262,6 +371,37 @@ def _get_legacy_module():
 # ══════════════════════════════════════════════════════════════
 # 화면 구성
 # ══════════════════════════════════════════════════════════════
+
+_checkpoints = _list_checkpoints()
+with st.expander(f"💾 저장된 실행 결과 (중단된 실행 복구) — {len(_checkpoints)}개", expanded=False):
+    if not _checkpoints:
+        st.caption("아직 저장된 실행이 없습니다.")
+    else:
+        st.caption(
+            "실행 도중 끊겨도 그때까지 처리된 결과는 여기 남습니다. 같은 ISBN 목록 + 같은 "
+            "시스템으로 아래에서 '생성 실행'을 다시 누르면 이미 끝난 건은 건너뛰고 이어서 "
+            "처리합니다. 지금 상태 그대로 받고 싶으면 여기서 바로 다운로드하세요."
+        )
+        for _ckpt_path in _checkpoints:
+            _meta, _done = _load_checkpoint(_ckpt_path)
+            _total_target = (_meta or {}).get("total", "?")
+            _system_label = (_meta or {}).get("system", "?")
+            _created_at = (_meta or {}).get("created_at", "")
+            col_info, col_dl, col_del = st.columns([3, 1, 1])
+            with col_info:
+                st.write(f"**{_system_label}** — {len(_done)}/{_total_target}건 완료 (생성: {_created_at})")
+            with col_dl:
+                st.download_button(
+                    "CSV 다운로드",
+                    data=_to_csv_bytes(_checkpoint_dataframe(_ckpt_path)),
+                    file_name=f"평가결과_중간저장_{_ckpt_path.stem}.csv",
+                    mime="text/csv",
+                    key=f"dl_{_ckpt_path.stem}",
+                )
+            with col_del:
+                if st.button("삭제", key=f"del_{_ckpt_path.stem}"):
+                    _ckpt_path.unlink(missing_ok=True)
+                    st.rerun()
 
 system = st.radio(
     "평가할 시스템",
@@ -330,6 +470,15 @@ st.caption(
 
 if st.button("생성 실행", type="primary", disabled=not unique_isbns):
     total = len(unique_isbns)
+
+    # 체크포인트 — (시스템, ISBN 목록)이 같으면 항상 같은 파일. 이미 끝난 건이 있으면
+    # 건너뛰고 이어서 처리한다(같은 입력으로 재실행 = 자동 이어하기).
+    ckpt_path = _checkpoint_path(system, unique_isbns)
+    _init_checkpoint(ckpt_path, system, total)
+    _, done_map = _load_checkpoint(ckpt_path)
+    if done_map:
+        st.info(f"저장된 중간 결과 발견 — {len(done_map)}/{total}건은 건너뛰고 이어서 진행합니다.")
+
     progress = st.progress(0, text="준비 중...")
     status = st.empty()
 
@@ -337,34 +486,44 @@ if st.button("생성 실행", type="primary", disabled=not unique_isbns):
     results: list[tuple[str, str, str]] = []
 
     if system.startswith("고도화"):
-        chunk_size = 10
-        for i in range(0, total, chunk_size):
-            chunk = unique_isbns[i : i + chunk_size]
-            end = min(i + chunk_size, total)
-            status.text(f"{i + 1} ~ {end} / {total} 생성 중... (고도화 I2M)")
-            jobs = [[isbn] for isbn in chunk]
-            for r in convert_batch(jobs):
-                results.append((r.get("isbn", ""), r.get("mrk_text", ""), r.get("error") or ""))
-            progress.progress(end / total, text=f"{end}/{total} 완료")
+        # ISBN마다 개별 HTTP 요청(convert_isbn)을 보낸다 — 10건씩 convert_batch()로 묶으면
+        # 백엔드가 그 10건을 완전 순차 처리하는 동안 Render 앞단 프록시의 요청 타임아웃을
+        # 넘겨 연결이 끊기는 문제가 실측으로 확인됐다(위 모듈 docstring 참고).
+        for i, isbn in enumerate(unique_isbns, start=1):
+            if isbn in done_map:
+                rec = done_map[isbn]
+                results.append((isbn, rec.get("mrk_text", ""), rec.get("error") or ""))
+            else:
+                status.text(f"{i} / {total} 생성 중... (고도화 I2M)")
+                r = convert_isbn(isbn)
+                mrk_text, err = r.get("mrk_text", ""), r.get("error") or ""
+                _append_checkpoint(ckpt_path, isbn, mrk_text, err)
+                results.append((isbn, mrk_text, err))
+            progress.progress(i / total, text=f"{i}/{total} 완료")
     else:
         legacy_module, source_label = _get_legacy_module()
         st.caption(f"실행 소스: {source_label}")
         for i, isbn in enumerate(unique_isbns, start=1):
-            status.text(f"{i} / {total} 생성 중... (기존 I2M)")
-            ph = st.empty()
-            try:
-                with ph.container():
-                    _, _, mrk_text, _ = legacy_module.run_and_export(
-                        isbn,
-                        use_ai_940=True,
-                        save_dir="./output",
-                        preview_in_streamlit=False,
-                    )
-                err = ""
-            except Exception as e:
-                mrk_text, err = "", str(e)
-            ph.empty()  # 원본 내부의 st.write/warning/expander 디버그 출력을 지운다
-            results.append((isbn, mrk_text, err))
+            if isbn in done_map:
+                rec = done_map[isbn]
+                results.append((isbn, rec.get("mrk_text", ""), rec.get("error") or ""))
+            else:
+                status.text(f"{i} / {total} 생성 중... (기존 I2M)")
+                ph = st.empty()
+                try:
+                    with ph.container():
+                        _, _, mrk_text, _ = legacy_module.run_and_export(
+                            isbn,
+                            use_ai_940=True,
+                            save_dir="./output",
+                            preview_in_streamlit=False,
+                        )
+                    err = ""
+                except Exception as e:
+                    mrk_text, err = "", str(e)
+                ph.empty()  # 원본 내부의 st.write/warning/expander 디버그 출력을 지운다
+                _append_checkpoint(ckpt_path, isbn, mrk_text, err)
+                results.append((isbn, mrk_text, err))
             progress.progress(i / total, text=f"{i}/{total} 완료")
 
     progress.empty()
@@ -385,10 +544,10 @@ if st.button("생성 실행", type="primary", disabled=not unique_isbns):
         with st.expander(f"실패 목록 ({fail_count}건)"):
             st.write(", ".join(failed))
 
-    csv_bytes = df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
     st.download_button(
         "CSV 파일 다운로드 (.csv)",
-        data=csv_bytes,
+        data=_to_csv_bytes(df),
         file_name="평가결과.csv",
         mime="text/csv",
     )
+    st.caption(f"💾 중간 저장 파일: `{ckpt_path.name}` — 위 '저장된 실행 결과'에서 언제든 다시 받거나 지울 수 있습니다.")
