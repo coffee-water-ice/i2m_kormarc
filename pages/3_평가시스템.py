@@ -51,6 +51,12 @@ CSV 컬럼 구성:
   화면 상단 "저장된 실행 결과"에서 실행 중이 아니어도 지금까지의 결과를 CSV로 내려받거나
   지울 수 있다. CSV의 컬럼 구성(정규화 규칙)은 완료 시 다운로드와 동일하게 _normalize_row/
   _build_dataframe을 그대로 재사용한다.
+- (실측: 150건 중 약 40건에서 에러 없이 조용히 멈추는 현상 확인 — Streamlit 세션/브라우저
+  연결이 끊기는 것으로 추정되며, 정확한 원인은 미확정.) 이 경우 사용자가 원본 ISBN
+  목록을 다시 붙여넣지 않고도 재개할 수 있어야 해서, 체크포인트 메타에 대상 ISBN 목록
+  전체(isbns)를 같이 저장하고, "저장된 실행 결과" 각 항목에 "이어서 실행" 버튼을 추가했다.
+  이 버튼은 체크포인트에 저장된 ISBN 목록만으로 나머지를 처리한다 — 몇 번을 끊겨도 그
+  버튼만 계속 누르면 된다. (이 필드가 없는 이전 버전 체크포인트 파일은 버튼이 비활성화된다.)
 """
 
 from __future__ import annotations
@@ -258,16 +264,19 @@ def _checkpoint_path(system_label: str, isbns: list[str]) -> Path:
     return CHECKPOINT_DIR / f"{_system_slug(system_label)}_{len(isbns)}건_{digest}.jsonl"
 
 
-def _init_checkpoint(path: Path, system_label: str, total: int) -> None:
+def _init_checkpoint(path: Path, system_label: str, isbns: list[str]) -> None:
     """파일이 없을 때만 메타 정보(1번째 줄)를 써서 새로 만든다. 이미 있으면(이어서 진행하는
-    상황) 손대지 않는다."""
+    상황) 손대지 않는다. 대상 ISBN 목록 전체(isbns)를 같이 저장해두는 이유: 실행이 도중에
+    끊겼을 때, 사용자가 원본 ISBN 목록을 다시 붙여넣지 않아도 "이어서 실행" 버튼 하나로
+    체크포인트만 보고 나머지를 처리할 수 있게 하기 위함."""
     if path.exists():
         return
     CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
     meta = {
         "meta": {
             "system": system_label,
-            "total": total,
+            "total": len(isbns),
+            "isbns": isbns,
             "created_at": datetime.now().isoformat(timespec="seconds"),
         }
     }
@@ -369,27 +378,151 @@ def _get_legacy_module():
 
 
 # ══════════════════════════════════════════════════════════════
+# 배치 실행 + 결과 표시 — "생성 실행" 버튼과 "이어서 실행" 버튼이 공유한다
+# ══════════════════════════════════════════════════════════════
+
+def _run_batch(
+    system_label: str,
+    target_isbns: list[str],
+    ckpt_path: Path,
+    done_map: dict[str, dict],
+) -> list[tuple[str, str, str]]:
+    """target_isbns를 순서대로 처리한다. done_map(체크포인트에 이미 있는 결과)에 있는 건
+    재처리하지 않고 그대로 쓰고, 없는 건 새로 생성해서 즉시 체크포인트에 저장한다.
+    (isbn, mrk_text, error) 리스트를 target_isbns 순서 그대로 반환한다."""
+    total = len(target_isbns)
+    progress = st.progress(0, text="준비 중...")
+    status = st.empty()
+    results: list[tuple[str, str, str]] = []
+
+    if system_label.startswith("고도화"):
+        # ISBN마다 개별 HTTP 요청(convert_isbn)을 보낸다 — 10건씩 convert_batch()로 묶으면
+        # 백엔드가 그 10건을 완전 순차 처리하는 동안 Render 앞단 프록시의 요청 타임아웃을
+        # 넘겨 연결이 끊기는 문제가 실측으로 확인됐다(위 모듈 docstring 참고).
+        for i, isbn in enumerate(target_isbns, start=1):
+            if isbn in done_map:
+                rec = done_map[isbn]
+                results.append((isbn, rec.get("mrk_text", ""), rec.get("error") or ""))
+            else:
+                status.text(f"{i} / {total} 생성 중... (고도화 I2M)")
+                r = convert_isbn(isbn)
+                mrk_text, err = r.get("mrk_text", ""), r.get("error") or ""
+                _append_checkpoint(ckpt_path, isbn, mrk_text, err)
+                results.append((isbn, mrk_text, err))
+            progress.progress(i / total, text=f"{i}/{total} 완료")
+    else:
+        legacy_module, source_label = _get_legacy_module()
+        st.caption(f"실행 소스: {source_label}")
+        for i, isbn in enumerate(target_isbns, start=1):
+            if isbn in done_map:
+                rec = done_map[isbn]
+                results.append((isbn, rec.get("mrk_text", ""), rec.get("error") or ""))
+            else:
+                status.text(f"{i} / {total} 생성 중... (기존 I2M)")
+                ph = st.empty()
+                try:
+                    with ph.container():
+                        _, _, mrk_text, _ = legacy_module.run_and_export(
+                            isbn,
+                            use_ai_940=True,
+                            save_dir="./output",
+                            preview_in_streamlit=False,
+                        )
+                    err = ""
+                except Exception as e:
+                    mrk_text, err = "", str(e)
+                ph.empty()  # 원본 내부의 st.write/warning/expander 디버그 출력을 지운다
+                _append_checkpoint(ckpt_path, isbn, mrk_text, err)
+                results.append((isbn, mrk_text, err))
+            progress.progress(i / total, text=f"{i}/{total} 완료")
+
+    progress.empty()
+    status.empty()
+    return results
+
+
+def _show_results(results: list[tuple[str, str, str]], ckpt_path: Path) -> None:
+    total = len(results)
+    rows = [
+        _normalize_row(no, isbn, mrk_text, err)
+        for no, (isbn, mrk_text, err) in enumerate(results, start=1)
+    ]
+    df = _build_dataframe(rows)
+
+    success_count = sum(1 for _, _, err in results if not err)
+    fail_count = total - success_count
+    st.success(f"생성 완료 — 성공 {success_count}건 / 실패 {fail_count}건")
+
+    if fail_count:
+        failed = [isbn for isbn, _, err in results if err]
+        with st.expander(f"실패 목록 ({fail_count}건)"):
+            st.write(", ".join(failed))
+
+    st.download_button(
+        "CSV 파일 다운로드 (.csv)",
+        data=_to_csv_bytes(df),
+        file_name="평가결과.csv",
+        mime="text/csv",
+        key=f"final_dl_{ckpt_path.stem}",
+    )
+    st.caption(f"💾 중간 저장 파일: `{ckpt_path.name}` — 위 '저장된 실행 결과'에서 언제든 다시 받거나 지울 수 있습니다.")
+
+
+# ══════════════════════════════════════════════════════════════
 # 화면 구성
 # ══════════════════════════════════════════════════════════════
 
 _checkpoints = _list_checkpoints()
+
+# 가장 최근에 끊긴 실행을 굳이 목록에서 찾아 고르지 않아도 바로 이어서 진행할 수 있게,
+# 접혀 있는 "저장된 실행 결과" 패널과 별개로 눈에 바로 띄는 배너 하나를 최상단에 둔다.
+_resumable = None
+for _ckpt_path in _checkpoints:
+    _meta, _done = _load_checkpoint(_ckpt_path)
+    _target_isbns = (_meta or {}).get("isbns") or []
+    if _target_isbns and len(_done) < len(_target_isbns):
+        _resumable = (_ckpt_path, _meta, _done, _target_isbns)
+        break  # _checkpoints는 최신순 정렬 — 가장 최근 것 하나만 쓴다
+
+if _resumable is not None:
+    _r_path, _r_meta, _r_done, _r_isbns = _resumable
+    _r_remaining = len(_r_isbns) - len(_r_done)
+    st.warning(
+        f"⏸️ 중단된 실행이 있습니다 — **{_r_meta.get('system', '')}**, "
+        f"{len(_r_done)}/{len(_r_isbns)}건 완료 ({_r_remaining}건 남음)."
+    )
+    if st.button(f"▶️ 바로 이어서 실행 ({_r_remaining}건 남음)", type="primary", key="quick_resume"):
+        st.session_state["eval_resume_ckpt"] = str(_r_path)
+        st.rerun()
+    st.divider()
+
 with st.expander(f"💾 저장된 실행 결과 (중단된 실행 복구) — {len(_checkpoints)}개", expanded=False):
     if not _checkpoints:
         st.caption("아직 저장된 실행이 없습니다.")
     else:
         st.caption(
-            "실행 도중 끊겨도 그때까지 처리된 결과는 여기 남습니다. 같은 ISBN 목록 + 같은 "
-            "시스템으로 아래에서 '생성 실행'을 다시 누르면 이미 끝난 건은 건너뛰고 이어서 "
-            "처리합니다. 지금 상태 그대로 받고 싶으면 여기서 바로 다운로드하세요."
+            "실행 도중 끊겨도 그때까지 처리된 결과는 여기 남습니다. '이어서 실행'을 누르면 "
+            "ISBN 목록을 다시 붙여넣지 않아도 이 체크포인트에 저장된 목록만으로 나머지를 "
+            "처리합니다 — 몇 번을 끊겨도 이 버튼만 계속 누르면 됩니다. 지금 상태 그대로 "
+            "받고 싶으면 CSV 다운로드로 바로 받으세요."
         )
         for _ckpt_path in _checkpoints:
             _meta, _done = _load_checkpoint(_ckpt_path)
             _total_target = (_meta or {}).get("total", "?")
             _system_label = (_meta or {}).get("system", "?")
             _created_at = (_meta or {}).get("created_at", "")
-            col_info, col_dl, col_del = st.columns([3, 1, 1])
+            _target_isbns = (_meta or {}).get("isbns") or []
+            _can_resume = bool(_target_isbns) and len(_done) < len(_target_isbns)
+
+            col_info, col_resume, col_dl, col_del = st.columns([3, 1, 1, 1])
             with col_info:
                 st.write(f"**{_system_label}** — {len(_done)}/{_total_target}건 완료 (생성: {_created_at})")
+                if not _target_isbns and _total_target != "?":
+                    st.caption("(이전 버전 체크포인트라 ISBN 목록이 없어 '이어서 실행'을 못 씁니다 — CSV만 받을 수 있습니다.)")
+            with col_resume:
+                if st.button("이어서 실행", key=f"resume_{_ckpt_path.stem}", disabled=not _can_resume):
+                    st.session_state["eval_resume_ckpt"] = str(_ckpt_path)
+                    st.rerun()
             with col_dl:
                 st.download_button(
                     "CSV 다운로드",
@@ -402,6 +535,21 @@ with st.expander(f"💾 저장된 실행 결과 (중단된 실행 복구) — {l
                 if st.button("삭제", key=f"del_{_ckpt_path.stem}"):
                     _ckpt_path.unlink(missing_ok=True)
                     st.rerun()
+
+# "이어서 실행" 버튼을 눌렀으면(위 목록에서 트리거) 여기서 바로 처리한다 — 사용자가 원본
+# ISBN 목록을 다시 입력할 필요 없이, 체크포인트에 저장해둔 목록만으로 나머지를 처리한다.
+if "eval_resume_ckpt" in st.session_state:
+    _resume_path = Path(st.session_state.pop("eval_resume_ckpt"))
+    _resume_meta, _resume_done = _load_checkpoint(_resume_path)
+    if _resume_meta and _resume_meta.get("isbns"):
+        st.subheader(f"이어서 실행 중 — {_resume_meta.get('system', '')}")
+        _resume_results = _run_batch(
+            _resume_meta["system"], _resume_meta["isbns"], _resume_path, _resume_done
+        )
+        _show_results(_resume_results, _resume_path)
+        st.divider()
+    else:
+        st.error("이 체크포인트에는 ISBN 목록이 저장되어 있지 않아 이어서 실행할 수 없습니다.")
 
 system = st.radio(
     "평가할 시스템",
@@ -474,80 +622,10 @@ if st.button("생성 실행", type="primary", disabled=not unique_isbns):
     # 체크포인트 — (시스템, ISBN 목록)이 같으면 항상 같은 파일. 이미 끝난 건이 있으면
     # 건너뛰고 이어서 처리한다(같은 입력으로 재실행 = 자동 이어하기).
     ckpt_path = _checkpoint_path(system, unique_isbns)
-    _init_checkpoint(ckpt_path, system, total)
+    _init_checkpoint(ckpt_path, system, unique_isbns)
     _, done_map = _load_checkpoint(ckpt_path)
     if done_map:
         st.info(f"저장된 중간 결과 발견 — {len(done_map)}/{total}건은 건너뛰고 이어서 진행합니다.")
 
-    progress = st.progress(0, text="준비 중...")
-    status = st.empty()
-
-    # (isbn, mrk_text, error)
-    results: list[tuple[str, str, str]] = []
-
-    if system.startswith("고도화"):
-        # ISBN마다 개별 HTTP 요청(convert_isbn)을 보낸다 — 10건씩 convert_batch()로 묶으면
-        # 백엔드가 그 10건을 완전 순차 처리하는 동안 Render 앞단 프록시의 요청 타임아웃을
-        # 넘겨 연결이 끊기는 문제가 실측으로 확인됐다(위 모듈 docstring 참고).
-        for i, isbn in enumerate(unique_isbns, start=1):
-            if isbn in done_map:
-                rec = done_map[isbn]
-                results.append((isbn, rec.get("mrk_text", ""), rec.get("error") or ""))
-            else:
-                status.text(f"{i} / {total} 생성 중... (고도화 I2M)")
-                r = convert_isbn(isbn)
-                mrk_text, err = r.get("mrk_text", ""), r.get("error") or ""
-                _append_checkpoint(ckpt_path, isbn, mrk_text, err)
-                results.append((isbn, mrk_text, err))
-            progress.progress(i / total, text=f"{i}/{total} 완료")
-    else:
-        legacy_module, source_label = _get_legacy_module()
-        st.caption(f"실행 소스: {source_label}")
-        for i, isbn in enumerate(unique_isbns, start=1):
-            if isbn in done_map:
-                rec = done_map[isbn]
-                results.append((isbn, rec.get("mrk_text", ""), rec.get("error") or ""))
-            else:
-                status.text(f"{i} / {total} 생성 중... (기존 I2M)")
-                ph = st.empty()
-                try:
-                    with ph.container():
-                        _, _, mrk_text, _ = legacy_module.run_and_export(
-                            isbn,
-                            use_ai_940=True,
-                            save_dir="./output",
-                            preview_in_streamlit=False,
-                        )
-                    err = ""
-                except Exception as e:
-                    mrk_text, err = "", str(e)
-                ph.empty()  # 원본 내부의 st.write/warning/expander 디버그 출력을 지운다
-                _append_checkpoint(ckpt_path, isbn, mrk_text, err)
-                results.append((isbn, mrk_text, err))
-            progress.progress(i / total, text=f"{i}/{total} 완료")
-
-    progress.empty()
-    status.empty()
-
-    rows = [
-        _normalize_row(no, isbn, mrk_text, err)
-        for no, (isbn, mrk_text, err) in enumerate(results, start=1)
-    ]
-    df = _build_dataframe(rows)
-
-    success_count = sum(1 for _, _, err in results if not err)
-    fail_count = total - success_count
-    st.success(f"생성 완료 — 성공 {success_count}건 / 실패 {fail_count}건")
-
-    if fail_count:
-        failed = [isbn for isbn, _, err in results if err]
-        with st.expander(f"실패 목록 ({fail_count}건)"):
-            st.write(", ".join(failed))
-
-    st.download_button(
-        "CSV 파일 다운로드 (.csv)",
-        data=_to_csv_bytes(df),
-        file_name="평가결과.csv",
-        mime="text/csv",
-    )
-    st.caption(f"💾 중간 저장 파일: `{ckpt_path.name}` — 위 '저장된 실행 결과'에서 언제든 다시 받거나 지울 수 있습니다.")
+    results = _run_batch(system, unique_isbns, ckpt_path, done_map)
+    _show_results(results, ckpt_path)
