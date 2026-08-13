@@ -473,6 +473,29 @@ def _show_results(results: list[tuple[str, str, str]], ckpt_path: Path) -> None:
 # ══════════════════════════════════════════════════════════════
 
 _checkpoints = _list_checkpoints()
+
+# 가장 최근에 끊긴 실행을 굳이 목록에서 찾아 고르지 않아도 바로 이어서 진행할 수 있게,
+# 접혀 있는 "저장된 실행 결과" 패널과 별개로 눈에 바로 띄는 배너 하나를 최상단에 둔다.
+_resumable = None
+for _ckpt_path in _checkpoints:
+    _meta, _done = _load_checkpoint(_ckpt_path)
+    _target_isbns = (_meta or {}).get("isbns") or []
+    if _target_isbns and len(_done) < len(_target_isbns):
+        _resumable = (_ckpt_path, _meta, _done, _target_isbns)
+        break  # _checkpoints는 최신순 정렬 — 가장 최근 것 하나만 쓴다
+
+if _resumable is not None:
+    _r_path, _r_meta, _r_done, _r_isbns = _resumable
+    _r_remaining = len(_r_isbns) - len(_r_done)
+    st.warning(
+        f"⏸️ 중단된 실행이 있습니다 — **{_r_meta.get('system', '')}**, "
+        f"{len(_r_done)}/{len(_r_isbns)}건 완료 ({_r_remaining}건 남음)."
+    )
+    if st.button(f"▶️ 바로 이어서 실행 ({_r_remaining}건 남음)", type="primary", key="quick_resume"):
+        st.session_state["eval_resume_ckpt"] = str(_r_path)
+        st.rerun()
+    st.divider()
+
 with st.expander(f"💾 저장된 실행 결과 (중단된 실행 복구) — {len(_checkpoints)}개", expanded=False):
     if not _checkpoints:
         st.caption("아직 저장된 실행이 없습니다.")
