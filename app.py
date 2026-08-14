@@ -208,10 +208,16 @@ def _settings_to_secrets(settings: Settings) -> dict:
     if settings.gspread_credentials:
         os.environ.setdefault("GSPREAD_CREDENTIALS", settings.gspread_credentials)
 
-    # core/kdc_model.py도 같은 방식으로 os.environ에서 모델 경로를 읽는다
+    # core/kdc_model.py와 core/fields/marc_056.py도 같은 방식으로 os.environ에서 읽는다
     # (필드 모듈이 core.config를 import하지 않게 두기 위함 — 원칙 #9 "행 자체 완결").
+    # 토큰 예산·MAX_LEN은 학습 전처리와 일치해야 하는 값이라 모델 라운드마다 다르다.
     if settings.kdc_model_dir:
         os.environ.setdefault("KDC_MODEL_DIR", settings.kdc_model_dir)
+    os.environ.setdefault("KDC_EDITION", settings.kdc_edition)
+    os.environ.setdefault("KDC_MAX_LEN", str(settings.kdc_max_len))
+    os.environ.setdefault("KDC_KEYWORD_TOKEN_BUDGET", str(settings.kdc_keyword_token_budget))
+    os.environ.setdefault("KDC_TOC_TOKEN_BUDGET", str(settings.kdc_toc_token_budget))
+    os.environ.setdefault("KDC_DESC_TOKEN_BUDGET", str(settings.kdc_desc_token_budget))
 
     return {
         "ALADIN_TTB_KEY":  settings.aladin_ttb_key,
@@ -432,6 +438,7 @@ def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
             "kdc_candidates": diag_056.get("candidates", []),
             "kdc_low_confidence": diag_056.get("low_confidence", False),
             "kdc_margin_ratio": diag_056.get("margin_ratio"),
+            "kdc_edition": diag_056.get("edition", ""),
             "kdc_reason": diag_056.get("reason", ""),
             "kdc_model_version": settings.kdc_model_version,
             "category_id":   (item or {}).get("categoryId", ""),

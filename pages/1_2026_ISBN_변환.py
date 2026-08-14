@@ -59,12 +59,31 @@ def _sort_mrk_lines(mrk_text: str) -> str:
     return "\n".join(sorted(lines, key=_tag_key))
 
 
+# KDC 류(1자리) 이름 — 후보 코드만 보고 판단하기 어려워 옆에 병기한다.
+# 강(2자리) 95개 전체 명칭표는 아직 없어 류 수준까지만 표시한다.
+_KDC_CLASS_NAME = {
+    "0": "총류", "1": "철학", "2": "종교", "3": "사회과학", "4": "자연과학",
+    "5": "기술과학", "6": "예술", "7": "언어", "8": "문학", "9": "역사",
+}
+
+
+def _kdc_label(code: str) -> str:
+    """'84' → '84 · 문학'."""
+    name = _KDC_CLASS_NAME.get((code or "")[:1], "")
+    return f"{code} · {name}" if name else code
+
+
 def _replace_056(mrk_text: str, kdc: str) -> str:
-    """MRK 텍스트의 056 행 $a를 사서가 고른 후보로 교체한다. 056 행이 없으면 원문 그대로."""
+    """
+    MRK 텍스트의 056 행 $a만 사서가 고른 값으로 교체한다. 056 행이 없으면 원문 그대로.
+
+    뒤따르는 $2(판표시)는 그대로 둬야 하므로 `[^$]*`로 다음 서브필드 앞까지만 잡는다
+    (`\\S*`로 잡으면 "$a808$26"에서 "$26"까지 삼켜 판표시가 사라진다).
+    """
     lines = (mrk_text or "").splitlines()
     for i, line in enumerate(lines):
         if line.startswith("=056"):
-            lines[i] = re.sub(r"\$a\S*", f"$a{kdc}", line, count=1)
+            lines[i] = re.sub(r"\$a[^$]*", f"$a{kdc}", line, count=1)
             break
     return "\n".join(lines)
 
@@ -168,31 +187,77 @@ with tab_single:
                 label_visibility="collapsed",
             )
 
-            # ── 056 KDC 분류 후보 (딥러닝 model8) ──────────────────
+            # ── 056 KDC 분류기호 (딥러닝 모델) ────────────────────
             # 모델은 KDC "강"(2자리)까지만 예측한다. 완성된 분류기호가 아니므로
-            # 후보와 확률을 함께 보여주고 사서가 고르거나 직접 고치게 한다.
+            # 후보·근거를 보여주고 사서가 고른 뒤 세목을 채우는 흐름으로 만든다.
             kdc_candidates = meta.get("kdc_candidates") or []
             final_mrk = edited_mrk
             if kdc_candidates:
-                st.subheader("056 KDC 분류 후보")
+                st.subheader("056 KDC 분류기호")
+
+                ratio = meta.get("kdc_margin_ratio")
                 if meta.get("kdc_low_confidence"):
                     st.warning(
-                        "1순위와 2순위가 거의 대등합니다 — 사서 검토가 필요합니다. "
-                        "이 구간의 1순위 정확도는 약 58%입니다."
+                        "**1순위와 2순위가 대등합니다 — 검토가 필요합니다.** "
+                        "이런 경우 1순위가 맞을 확률은 약 58%로 떨어집니다. "
+                        "아래 후보를 직접 비교해 주세요."
                     )
-                labels = {c["kdc"]: f"{c['kdc']}  ({c['prob']:.1%})" for c in kdc_candidates}
-                chosen = st.radio(
-                    "강(2자리)까지만 예측합니다. 세목은 위 MRK 직접 수정란에서 채우세요.",
-                    [c["kdc"] for c in kdc_candidates],
-                    format_func=lambda k: labels[k],
-                    horizontal=True,
-                    key=f"kdc_pick_{result.get('isbn', '')}_{seq}",
+                elif ratio:
+                    st.caption(f"1순위가 2순위보다 **{ratio:g}배** 우세합니다.")
+
+                # 확률 자체는 보정되지 않아 절대값(예: 32%)이 낮아 보인다.
+                # 후보 간 상대 크기가 판단 근거이므로 1순위 대비 비율로 막대를 그린다.
+                top_prob = max(c["prob"] for c in kdc_candidates) or 1.0
+                bars = []
+                for rank, c in enumerate(kdc_candidates, start=1):
+                    width = max(4, round(c["prob"] / top_prob * 100))
+                    shade = "#4a72c4" if rank == 1 else "#a9b6cd"
+                    bars.append(
+                        f'<div style="display:flex;align-items:center;gap:8px;margin:2px 0;">'
+                        f'<span style="width:6.5em;font-weight:{600 if rank == 1 else 400};">'
+                        f'{_kdc_label(c["kdc"])}</span>'
+                        f'<span style="flex:0 0 {width}%;height:10px;background:{shade};'
+                        f'border-radius:2px;"></span>'
+                        f'<span style="color:gray;font-size:0.85em;">{c["prob"]:.1%}</span>'
+                        f"</div>"
+                    )
+                st.markdown("".join(bars), unsafe_allow_html=True)
+
+                col_pick, col_detail = st.columns([3, 2], gap="medium")
+                with col_pick:
+                    chosen = st.radio(
+                        "분류기호 선택",
+                        [c["kdc"] for c in kdc_candidates],
+                        format_func=_kdc_label,
+                        horizontal=True,
+                        key=f"kdc_pick_{result.get('isbn', '')}_{seq}",
+                    )
+                with col_detail:
+                    detail = st.text_input(
+                        "세목 (직접 입력)",
+                        value="",
+                        max_chars=8,
+                        placeholder="예: 8 → 808",
+                        key=f"kdc_detail_{result.get('isbn', '')}_{seq}",
+                    )
+
+                final_kdc = f"{chosen}{detail.strip()}"
+                edition = meta.get("kdc_edition", "")
+                st.markdown(
+                    f"→ 적용될 값: `=056  \\\\$a{final_kdc}"
+                    + (f"$2{edition}" if edition else "")
+                    + "`"
                 )
-                # 1순위를 그대로 둔 경우에는 텍스트를 건드리지 않는다
-                # (사서가 textarea에서 세목까지 직접 채워 넣었을 수 있다).
-                if chosen != kdc_candidates[0]["kdc"]:
-                    final_mrk = _replace_056(edited_mrk, chosen)
-                st.caption(f"모델 버전: `{meta.get('kdc_model_version', '')}`")
+
+                # 1순위를 그대로 두고 세목도 안 넣었으면 텍스트를 건드리지 않는다
+                # (사서가 textarea에서 직접 채워 넣었을 수 있다).
+                if final_kdc != kdc_candidates[0]["kdc"]:
+                    final_mrk = _replace_056(edited_mrk, final_kdc)
+
+                st.caption(
+                    f"모델은 강(2자리)까지만 예측합니다 · 모델 버전 "
+                    f"`{meta.get('kdc_model_version', '')}`"
+                )
             elif meta.get("kdc_reason"):
                 st.caption(f"056 미생성: {meta['kdc_reason']}")
 

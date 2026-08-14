@@ -26,9 +26,21 @@ from core.debug_log import dbg, dbg_err
 _LOCK = threading.Lock()
 _STATE: dict = {"loaded": False, "tok": None, "model": None, "id2label": None, "reason": ""}
 
-# 학습 설정과 반드시 일치해야 한다 — model8은 train_runpod_v8.py에서 MAX_LEN=384로 학습됐다
-# (학습보고서_model8.pdf 3절). 512로 두면 학습 때 잘린 적 없는 위치까지 입력이 들어가 분포가 달라진다.
-MAX_LENGTH = 384
+# 학습 설정과 반드시 일치해야 하는 값이라 모델마다 다르다 — 상수로 박지 않고 설정에서 읽는다.
+#   model8   (prepare_data_v8.py)          : 384
+#   model11+ (prepare_data_v11_longctx.py) : 512
+# 어긋나면 학습 때 존재하지 않던 길이의 입력이 들어가 분포가 달라진다.
+DEFAULT_MAX_LENGTH = 384
+
+
+def max_length() -> int:
+    """모델 입력 최대 토큰 수. KDC_MAX_LEN 미설정 시 model8 기준값."""
+    raw = (os.environ.get("KDC_MAX_LEN") or "").strip()
+    try:
+        value = int(raw)
+        return value if value > 0 else DEFAULT_MAX_LENGTH
+    except ValueError:
+        return DEFAULT_MAX_LENGTH
 
 
 def model_dir() -> Path | None:
@@ -136,7 +148,7 @@ def predict_topk(text: str, k: int = 3) -> list[tuple[str, float]]:
         model = _STATE["model"]
         id2label = _STATE["id2label"]
 
-        enc = tok(text, truncation=True, max_length=MAX_LENGTH, return_tensors="pt")
+        enc = tok(text, truncation=True, max_length=max_length(), return_tensors="pt")
         with torch.no_grad():
             logits = model(**enc).logits
         probs = torch.softmax(logits, dim=-1)[0]

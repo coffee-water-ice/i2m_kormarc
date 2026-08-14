@@ -79,18 +79,36 @@ pip install transformers
 ```
 
 ```ini
-# 2) i2m_kormarc_2026_api_keys.env 에 모델 폴더 경로
-KDC_MODEL_DIR=<딥러닝팀에게 받은 kdc_model8_large_swa 폴더 경로>
+# 2) i2m_kormarc_2026_api_keys.env 에 모델 폴더 경로와 입력문 조립 상수
+KDC_MODEL_DIR=<딥러닝팀에게 받은 모델 폴더 경로>
 KDC_MODEL_VERSION=model8_large_swa
+
+# 056 $2(판표시) — 정독도서관 기준 KDC 6판
+KDC_EDITION=6
+
+# 학습 전처리(prepare_data_vN.py)와 반드시 일치시킬 것
+KDC_MAX_LEN=384
+KDC_KEYWORD_TOKEN_BUDGET=60
+KDC_TOC_TOKEN_BUDGET=150
+KDC_DESC_TOKEN_BUDGET=100
 ```
 
 모델 폴더에는 `config.json`, `model.safetensors`, `tokenizer.json`, `vocab.txt` 등이
-들어 있다. **경로만 바꾸면 model9·model10으로 교체된다** — 코드 수정이 필요 없다
+들어 있다. 코드 수정 없이 **설정만 바꾸면 다른 모델로 교체된다**
 (「056 분류모델 개선 및 I2M 연계 추진안」 4절 "모델 경로와 버전의 설정값 분리").
 
-> **주의**: 모델 교체 시 학습 전처리(`prepare_data_vN.py`의 `build_text()`)가 바뀌었는지
-> 확인할 것. 추론 입력이 학습 입력과 다르면 정확도가 떨어진다. `marc_056.py`의
-> 구분자·토큰 예산 상수가 그 값을 그대로 복제한 것이다.
+> **주의**: 모델을 바꿀 때 **경로만 바꾸면 되는 것이 아니다.** 학습 전처리
+> (`prepare_data_vN.py`)의 토큰 예산과 `MAX_LEN`이 라운드마다 달라졌으므로 함께 맞춰야
+> 한다. 추론 입력이 학습 입력과 어긋나면 정확도가 조용히 떨어진다
+> (model8 실측: top-1 88.0% → 83.0%).
+
+| | MAX_LEN | 키워드 | 목차 | 책소개 | 전처리 스크립트 |
+|---|---|---|---|---|---|
+| model8 | 384 | 60 | 150 | 100 | `prepare_data_v8.py` |
+| model11+ | 512 | 60 | 200 | 140 | `prepare_data_v11_longctx.py` |
+
+구분자(`" [SEP] "`)와 필드 순서(본표제 → 카테고리 → 653키워드 → 목차 → 책소개)는
+model8~12에서 바뀌지 않았다.
 
 Windows에서는 경로 길이 제한(260자) 때문에 깊은 폴더 아래에 가상환경을 만들면
 torch 설치가 실패할 수 있다. 그 경우 `C:\Users\<사용자>\venvs\i2m` 처럼 짧은 경로에
