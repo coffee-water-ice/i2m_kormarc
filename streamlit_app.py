@@ -15,8 +15,13 @@ from __future__ import annotations
 import streamlit as st
 
 from api_client import check_backend_health, get_backend_url
+from auth_gate import require_password
 
 st.set_page_config(page_title="I2M KORMARC 통합 시스템", page_icon="📚", layout="wide")
+
+# 공개 배포 시 비밀번호 잠금. APP_PASSWORD 미설정이면 아무 일도 하지 않는다.
+# 페이지마다 각자 실행되므로 모든 진입점에서 호출해야 한다.
+require_password()
 
 
 @st.cache_data(ttl=60, show_spinner="🔄️ Render 콜드 스타트 중... (최대 1분 정도 걸릴 수 있습니다)")

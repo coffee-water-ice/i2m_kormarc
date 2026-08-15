@@ -26,17 +26,29 @@ core/fields/marc_056.py
 
 from __future__ import annotations
 
+import os
 import re
 
 from core import kdc_model
 from core.debug_log import dbg
 
-# 학습 전처리(prepare_data_v8.py)의 상수를 그대로 옮긴 것. 모델을 교체할 때
-# 학습 스크립트가 바뀌었다면 여기도 함께 맞춰야 한다.
+# 구분자와 필드 순서는 model8~12에서 바뀌지 않았다.
 FIELD_SEPARATOR = " [SEP] "
-KEYWORD_TOKEN_BUDGET = 60
-TOC_TOKEN_BUDGET = 150
-DESC_TOKEN_BUDGET = 100
+
+# 토큰 예산은 모델 라운드마다 달라 설정에서 읽는다(기본값은 model8 기준).
+#   model8   (prepare_data_v8.py)          : 60 / 150 / 100, MAX_LEN 384
+#   model11+ (prepare_data_v11_longctx.py) : 60 / 200 / 140, MAX_LEN 512
+# 학습 스크립트의 값과 어긋나면 정확도가 조용히 떨어진다(model8 실측 88.0% → 83.0%).
+_DEFAULT_BUDGETS = {"keyword": 60, "toc": 150, "desc": 100}
+
+
+def _budget(name: str) -> int:
+    raw = (os.environ.get(f"KDC_{name.upper()}_TOKEN_BUDGET") or "").strip()
+    try:
+        value = int(raw)
+        return value if value > 0 else _DEFAULT_BUDGETS[name]
+    except ValueError:
+        return _DEFAULT_BUDGETS[name]
 
 # "검토 필요" 판정 기준 — 1순위 확률이 아니라 1·2순위의 격차를 본다.
 #
@@ -90,9 +102,9 @@ def build_model_input(
             parts.append(value)  # 예산 없음 — 남은 토큰을 전부 쓴다
 
     for value, budget in (
-        (_clean(keywords), KEYWORD_TOKEN_BUDGET),
-        (_clean(toc), TOC_TOKEN_BUDGET),
-        (_clean(description), DESC_TOKEN_BUDGET),
+        (_clean(keywords), _budget("keyword")),
+        (_clean(toc), _budget("toc")),
+        (_clean(description), _budget("desc")),
     ):
         if value:
             cut = kdc_model.truncate_by_tokens(value, budget)
@@ -181,6 +193,9 @@ def build_056_field(
         "※ 1·2위 경합 — 검토 필요" if diag["low_confidence"] else "",
     )
 
-    # KORMARC 056: 제1지시기호 = KDC 판표시 없음(공백), 제2지시기호 미정의(공백).
+    # KORMARC 056: 지시기호 2개 모두 공백. $a 분류기호, $2 판표시.
+    # 정독도서관은 KDC 6판을 쓰므로 $2는 "6" 고정(KDC_EDITION으로 변경 가능).
     # 모델은 "강"(2자리)까지만 예측하므로 $a에 2자리만 넣는다 — 세목은 사서가 채운다.
-    return f"=056  \\\\$a{best_kdc}", diag
+    edition = (os.environ.get("KDC_EDITION") or "6").strip() or "6"
+    diag["edition"] = edition
+    return f"=056  \\\\$a{best_kdc}$2{edition}", diag

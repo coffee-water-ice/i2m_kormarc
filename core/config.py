@@ -88,6 +88,18 @@ class Settings(BaseSettings):
         default="model8_large_swa", description="사용 중인 KDC 모델 버전 표시용 이름"
     )
 
+    # 056 $2(판표시) — 정독도서관은 KDC 6판을 쓴다. 판이 바뀌면 이 값만 고치면 된다.
+    kdc_edition: str = Field(default="6", description="056 $2에 기재할 KDC 판표시")
+
+    # 입력문 조립 상수 — 학습 전처리(prepare_data_vN.py)의 값과 반드시 같아야 한다.
+    # 어긋나면 정확도가 조용히 떨어진다(model8 실측: top-1 88.0% → 83.0%).
+    # 기본값은 model8(prepare_data_v8.py) 기준이며, model11부터는 입력 예산이 확장됐다.
+    #   model11+ (prepare_data_v11_longctx.py): max_len 512 / toc 200 / desc 140
+    kdc_max_len: int = Field(default=384, description="모델 입력 최대 토큰 수")
+    kdc_keyword_token_budget: int = Field(default=60, description="653 키워드 토큰 예산")
+    kdc_toc_token_budget: int = Field(default=150, description="목차 토큰 예산")
+    kdc_desc_token_budget: int = Field(default=100, description="책소개 토큰 예산")
+
     # ── 피드백 DB ─────────────────────────────────────────────
     feedback_db_path: str = Field(default="./feedback.db", description="SQLite 피드백 DB 경로")
 
