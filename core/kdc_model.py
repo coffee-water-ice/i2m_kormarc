@@ -6,9 +6,18 @@ core/kdc_model.py
 KDC 2자리(95개 클래스, 결번 05/09/26/46/97 제외)를 예측한다. 텍스트를 생성하지
 않으며 GPT와 무관하다.
 
-모델 파일(약 1.3GB)은 저장소에 포함되지 않는다. 로컬 경로를 KDC_MODEL_DIR
-환경변수로 주입하며, 미설정이거나 경로가 없으면 이 모듈은 조용히 비활성화되고
-056 생성만 건너뛴다(다른 필드는 영향받지 않는다, INTEGRATION_PRINCIPLES.md #3의
+모델 파일(약 1.3GB)은 저장소에 포함되지 않는다(GitHub 파일당 100MB 제한).
+KDC_MODEL_DIR 환경변수로 위치를 주입하며, 두 가지 형태를 모두 받는다.
+
+  1. 로컬 폴더 경로 — 예: C:\\...\\kdc_model8_large_swa
+  2. HuggingFace Hub 저장소 ID — 예: coffee-water-ice/kdc-model8
+
+Hub 저장소가 비공개면 HF_TOKEN 환경변수가 필요하다. transformers가 알아서
+내려받아 캐시하므로(HF_HOME으로 캐시 위치 조정), 두 경우 모두 아래 로드 코드는
+같다 — from_pretrained()가 경로와 저장소 ID를 모두 수용한다.
+
+미설정이거나 위치를 찾을 수 없으면 이 모듈은 조용히 비활성화되고 056 생성만
+건너뛴다(다른 필드는 영향받지 않는다, INTEGRATION_PRINCIPLES.md #3의
 "의존성 없으면 폴백" 방식과 동일).
 
 torch/transformers도 선택적 의존성이다 — 설치되어 있지 않으면 역시 비활성화된다.
@@ -17,6 +26,7 @@ torch/transformers도 선택적 의존성이다 — 설치되어 있지 않으�
 from __future__ import annotations
 
 import os
+import re
 import threading
 from pathlib import Path
 
@@ -43,33 +53,60 @@ def max_length() -> int:
         return DEFAULT_MAX_LENGTH
 
 
-def model_dir() -> Path | None:
-    """KDC_MODEL_DIR이 가리키는 모델 디렉터리. 미설정/부재면 None."""
+# HuggingFace Hub 저장소 ID 형태: "소유자/모델명". 소유자·모델명에는 영문·숫자와
+# . _ - 만 쓸 수 있고 슬래시는 정확히 하나다. 로컬 경로(드라이브 문자, 역슬래시,
+# 연속 슬래시)와 확실히 구분하기 위해 이 형태에만 해당할 때 Hub로 판단한다.
+_HUB_REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def model_source() -> tuple[str, str] | None:
+    """
+    모델 위치를 (종류, 값)으로 돌려준다. 종류는 "local" 또는 "hub".
+    미설정이거나 로컬 경로가 존재하지 않으면 None.
+    """
     raw = (os.environ.get("KDC_MODEL_DIR") or "").strip().strip('"')
     if not raw:
         return None
+    if _HUB_REPO_RE.match(raw):
+        return "hub", raw
     p = Path(raw)
-    return p if p.is_dir() else None
+    return ("local", str(p)) if p.is_dir() else None
+
+
+def model_dir() -> Path | None:
+    """로컬 폴더로 지정된 경우의 경로. Hub 저장소면 None."""
+    src = model_source()
+    if src and src[0] == "local":
+        return Path(src[1])
+    return None
 
 
 def availability() -> tuple[bool, str]:
     """
-    (사용 가능 여부, 사유) — UI 상태 표시용. 모델을 로드하지는 않는다.
+    (사용 가능 여부, 사유) — UI 상태 표시용. 모델을 로드하거나 내려받지는 않는다.
+
+    Hub 저장소는 실제 접근 가능 여부를 여기서 확인하지 않는다 — 네트워크 호출이
+    필요해 화면 렌더링이 느려지기 때문이다. 접근 실패는 첫 추론 시점에 드러나며
+    load_error()로 확인할 수 있다.
     """
-    p = model_dir()
-    if p is None:
+    src = model_source()
+    if src is None:
         raw = (os.environ.get("KDC_MODEL_DIR") or "").strip()
         if not raw:
             return False, "KDC_MODEL_DIR 미설정"
         return False, f"경로 없음: {raw}"
-    if not (p / "config.json").is_file():
-        return False, f"config.json 없음: {p}"
+
+    kind, value = src
+    if kind == "local" and not (Path(value) / "config.json").is_file():
+        return False, f"config.json 없음: {value}"
+
     try:
         import torch  # noqa: F401
         import transformers  # noqa: F401
     except ImportError as e:
         return False, f"의존성 미설치({e.name}) — pip install torch transformers"
-    return True, str(p)
+
+    return True, value if kind == "local" else f"HF Hub: {value}"
 
 
 def _load() -> bool:
@@ -92,16 +129,21 @@ def _load() -> bool:
             import torch
             from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-            path = str(model_dir())
-            tok = AutoTokenizer.from_pretrained(path)
-            model = AutoModelForSequenceClassification.from_pretrained(path)
+            # from_pretrained()는 로컬 경로와 Hub 저장소 ID를 모두 받는다.
+            # Hub인 경우 첫 호출에서 내려받아 캐시하므로 수 분이 걸릴 수 있다.
+            kind, location = model_source()
+            if kind == "hub":
+                dbg("[056] HF Hub에서 모델 확보 중:", location, "(최초 1회 다운로드)")
+
+            tok = AutoTokenizer.from_pretrained(location)
+            model = AutoModelForSequenceClassification.from_pretrained(location)
             model.eval()
             torch.set_grad_enabled(False)
 
             _STATE["tok"] = tok
             _STATE["model"] = model
             _STATE["id2label"] = model.config.id2label
-            dbg("[056] 모델 로드 완료:", path, f"({model.config.num_labels}개 클래스)")
+            dbg("[056] 모델 로드 완료:", location, f"({model.config.num_labels}개 클래스)")
             return True
         except Exception as e:
             _STATE["reason"] = f"로드 실패: {e}"
