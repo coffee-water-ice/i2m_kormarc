@@ -74,8 +74,10 @@ import pandas as pd
 import streamlit as st
 
 from api_client import convert_isbn
+from auth_gate import require_password
 
 st.set_page_config(page_title="평가 시스템 | I2M KORMARC", page_icon="🧪", layout="wide")
+require_password()
 st.title("I2M 평가 시스템")
 st.caption(
     "ISBN을 대량으로 넣고 기존 I2M(2025년 코드) 또는 고도화 I2M(2026 통합 파이프라인) 중 "

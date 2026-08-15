@@ -17,9 +17,11 @@ import pandas as pd
 import streamlit as st
 
 from api_client import convert_isbn, convert_batch
+from auth_gate import require_password
 
 
 st.set_page_config(page_title="ISBN 변환 | I2M KORMARC", page_icon="📚", layout="wide")
+require_password()
 st.title("KORMARC 자동 생성 시스템(I2M)")
 st.caption("FastAPI 백엔드(`/api/convert`)를 호출해 MARC 결과를 보여줍니다.")
 

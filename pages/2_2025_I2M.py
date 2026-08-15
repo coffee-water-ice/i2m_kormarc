@@ -45,9 +45,12 @@ from pathlib import Path
 
 import streamlit as st
 
+from auth_gate import require_password
+
 st.set_page_config(
     page_title="2025년 코드(원본) | I2M KORMARC", page_icon="🗄️", layout="wide"
 )
+require_password()
 st.title("2025년 I2M 시스템 (비교용)")
 st.caption(
     "통합 이전 '2025년 코드'(1215_main.py, 5284줄)를 수정 없이 그대로 실행합니다. "
