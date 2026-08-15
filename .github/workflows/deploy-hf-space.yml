@@ -74,7 +74,13 @@ jobs:
           rm -rf .git
           git init -q -b main
           git add -A
+          # DEPLOY_COMMIT은 .gitignore에 있어(저장소에 두지 않는 파일) add -A가
+          # 건너뛴다. Space에는 반드시 들어가야 하므로 강제로 넣는다.
+          git add -f DEPLOY_COMMIT
           git commit -q -m "deploy: ${GITHUB_SHA::7} (${GITHUB_REF_NAME})"
+
+          # 빠뜨리면 화면이 다시 local-dev로 표시된다 — 배포 전에 확인한다.
+          git ls-files --error-unmatch DEPLOY_COMMIT >/dev/null
           git push -q --force \
             "https://oauth2:${HF_TOKEN}@huggingface.co/spaces/${SPACE_ID}" main
           echo "배포 완료: ${GITHUB_SHA::7} -> ${SPACE_ID}"
