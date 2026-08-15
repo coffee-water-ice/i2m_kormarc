@@ -10,3 +10,6 @@ __pycache__/
 
 # 2025년 코드(원본) 비교 페이지가 run_and_export()에서 만드는 산출물
 /output/
+
+# 배포 워크플로가 만드는 커밋 정보 파일 (저장소에 두지 않는다)
+DEPLOY_COMMIT

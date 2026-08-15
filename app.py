@@ -85,22 +85,41 @@ _DEPLOY_TIME = datetime.fromtimestamp(
     os.path.getmtime(__file__), tz=_KST
 ).strftime("%Y-%m-%d %H:%M:%S")
 
-# 커밋 해시는 Render가 빌드마다 자동 주입하는 RENDER_GIT_COMMIT을 쓰고,
-# 로컬 개발 환경에는 이 값이 없으므로 "local-dev"로 표시한다.
-_DEPLOY_COMMIT = os.environ.get("RENDER_GIT_COMMIT", "")[:7] or "local-dev"
+# 배포된 커밋 정보. 플랫폼마다 알아내는 방법이 다르다.
+#
+#   Render   : RENDER_GIT_COMMIT을 빌드마다 자동 주입한다.
+#   HF Space : 그런 변수가 없다. Space 저장소의 .git은 배포 워크플로가 만든
+#              단일 커밋이라 GitHub의 실제 해시를 담고 있지 않다 — 그래서
+#              화면에 "local-dev"로 떠서 배포본인데도 로컬처럼 보였다.
+#              워크플로가 DEPLOY_COMMIT 파일에 GitHub 해시와 커밋 제목을 적어둔다.
+#   로컬     : 둘 다 없으므로 .git에 직접 물어본다.
+_DEPLOY_COMMIT_FILE = Path(__file__).resolve().parent / "DEPLOY_COMMIT"
 
 
-def _detect_commit_message() -> str:
+def _read_deploy_commit_file() -> tuple[str, str]:
+    """DEPLOY_COMMIT 파일에서 (해시, 커밋 제목)을 읽는다. 없으면 ("", "")."""
+    try:
+        lines = _DEPLOY_COMMIT_FILE.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return "", ""
+    sha = lines[0].strip() if lines else ""
+    msg = lines[1].strip() if len(lines) > 1 else ""
+    return sha, msg
+
+
+def _git_head(fmt: str) -> str:
     """
-    배포된 커밋의 메시지(제목 줄)를 로컬 저장소(.git)에서 조회한다. Render는
-    커밋 메시지를 환경변수로 주지 않으므로, 빌드 시 함께 포함되는 .git 디렉터리에
-    직접 물어본다. git이 없거나 .git이 빠져 있으면(빌드 환경에 따라 다를 수 있음)
-    조용히 빈 문자열을 반환한다 — 다른 시스템 상태 항목에는 영향 없다.
+    로컬 개발 환경에서 .git에 직접 물어본다. 실패하면 빈 문자열.
+
+    encoding을 명시하는 이유: text=True만 쓰면 파이썬이 로케일 인코딩으로 읽는데,
+    한국어 Windows는 cp949라 한글 커밋 메시지에서 UnicodeDecodeError가 난다.
+    git 출력은 UTF-8이므로 그렇게 읽고, 혹시 깨진 바이트가 있어도 죽지 않게 replace한다.
     """
     try:
         result = subprocess.run(
-            ["git", "log", "-1", "--format=%s"],
+            ["git", "log", "-1", f"--format={fmt}"],
             capture_output=True, text=True, timeout=5,
+            encoding="utf-8", errors="replace",
             cwd=Path(__file__).resolve().parent,
         )
         if result.returncode == 0:
@@ -110,7 +129,15 @@ def _detect_commit_message() -> str:
     return ""
 
 
-_DEPLOY_COMMIT_MSG = _detect_commit_message()
+_FILE_SHA, _FILE_MSG = _read_deploy_commit_file()
+
+_DEPLOY_COMMIT = (
+    os.environ.get("RENDER_GIT_COMMIT", "")
+    or _FILE_SHA
+    or _git_head("%H")
+)[:7] or "local-dev"
+
+_DEPLOY_COMMIT_MSG = _FILE_MSG or _git_head("%s")
 
 
 # ============================================================

@@ -23,6 +23,17 @@ jobs:
           # Space는 git 히스토리를 요구하지 않는다. 얕게 받아 시간을 아낀다.
           fetch-depth: 1
 
+      - name: 배포 커밋 정보 기록
+        # Space에는 RENDER_GIT_COMMIT 같은 변수가 없고, Space 저장소의 .git은
+        # 아래 단계가 만드는 단일 커밋이라 GitHub의 실제 해시를 담지 못한다.
+        # 파일로 남겨야 화면의 "마지막 배포" 표시가 실제 커밋을 가리킨다.
+        run: |
+          {
+            git rev-parse HEAD
+            git log -1 --format=%s
+          } > DEPLOY_COMMIT
+          cat DEPLOY_COMMIT
+
       - name: Space 설정 머리말 붙이기
         # HF Space는 README.md 맨 위의 YAML 머리말에서 SDK와 포트를 읽는다.
         # 저장소 README에 두면 GitHub 문서 맨 앞에 설정 블록이 노출되므로,
