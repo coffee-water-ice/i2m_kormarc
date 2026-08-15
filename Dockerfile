@@ -39,6 +39,37 @@ RUN pip install --no-cache-dir --user -r requirements.txt \
         --index-url https://download.pytorch.org/whl/cpu torch \
     && pip install --no-cache-dir --user transformers
 
+# ── 056 모델을 이미지에 포함시킨다 ────────────────────────────────
+#
+# 실행 시점에 받게 두면 컨테이너가 슬립에서 깨어날 때마다 1.28GB를 다시 내려받아
+# 첫 요청이 2~3분 걸린다(빈 캐시 기준 실측 188초). 빌드 때 한 번 받아 이미지에
+# 넣어두면 깨어난 뒤 로컬 디스크에서 로드만 하면 되고, 실측으로 로드 0.8초 +
+# 첫 추론 약 1초다.
+#
+# 대가는 이미지가 약 1.3GB 커지고 모델 교체 시 재빌드가 필요하다는 것이다.
+# 모델 갱신은 몇 달에 한 번이지만 슬립 복귀는 매일 일어나므로 이쪽이 이득이다.
+#
+# 저장소가 비공개라 빌드에도 토큰이 필요하다. Space 설정에서 HF_TOKEN을
+# "Secret"으로 등록하면 아래 --mount=type=secret 으로 읽을 수 있다. ENV로 받지
+# 않는 이유는 ENV 값이 이미지 레이어에 그대로 남기 때문이다.
+ARG KDC_MODEL_REPO=I2Muser/kdc-model12
+ENV KDC_MODEL_DIR=${KDC_MODEL_REPO}
+
+# 다운로드 로직은 별도 파일에 둔다. Dockerfile 안에 긴 python -c를 역슬래시로
+# 이어붙이면 따옴표·개행 처리에서 실수하기 쉽고, 그 실패가 빌드 단계에서야 드러난다.
+COPY --chown=user deploy_fetch_model.py ./
+RUN --mount=type=secret,id=HF_TOKEN,mode=0444 \
+    HF_TOKEN="$(cat /run/secrets/HF_TOKEN 2>/dev/null || true)" \
+    python deploy_fetch_model.py
+
+# 런타임에도 HF_TOKEN이 필요하다 — 캐시가 있어도 비공개 저장소는 최신 리비전을
+# 확인하는 요청을 한 번 보내기 때문이다(확인만 하고 파일은 캐시에서 쓰므로 빠르다).
+# Space 설정에서 HF_TOKEN을 Secret으로 등록하면 환경변수로 주입된다.
+#
+# 참고: 모델을 다른 저장소로 바꾸려면 Space Secret의 KDC_MODEL_DIR만 바꾸면 되지만,
+# 그 경우 이미지에 없는 모델이라 첫 기동에서 새로 내려받는다. 상시 쓸 모델이라면
+# 위 ARG KDC_MODEL_REPO를 바꿔 재빌드하는 편이 낫다.
+
 COPY --chown=user . .
 
 # 피드백 DB는 컨테이너 재시작 시 사라진다(Space 파일시스템은 영속이 아니다).
