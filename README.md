@@ -1,24 +1,3 @@
----
-title: I2M KORMARC 통합 변환 시스템
-emoji: 📚
-colorFrom: indigo
-colorTo: gray
-sdk: docker
-app_port: 7860
-pinned: false
-short_description: ISBN으로 KORMARC 레코드 초안을 자동 생성한다
----
-
-<!--
-위 YAML 머리말은 HuggingFace Space가 읽는 설정이다. 이 hf-space 브랜치에만 있으며
-main에는 없다 — 팀 README를 훼손하지 않기 위해서다. main의 변경을 이 브랜치로
-가져올 때 이 부분에서 충돌이 나면, 머리말을 남기고 나머지를 main 쪽으로 받으면 된다.
-
-  git checkout hf-space
-  git merge main            # README 충돌 시 위 머리말 유지
-  git push space hf-space:main
--->
-
 # i2m_kormarc — KORMARC 통합 변환 시스템
 
 041/245/653/260+300 4개 폴더 + 2025년 코드(단일 파일 `1215_main.py`)를 하나의
