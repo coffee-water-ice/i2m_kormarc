@@ -21,8 +21,18 @@ for _ in $(seq 1 30); do
 done
 
 # 백엔드가 죽으면 컨테이너도 함께 내려가도록 한다. 그대로 두면 프론트만 살아남아
-# 모든 변환이 실패하는 상태로 서비스되는 것처럼 보인다.
-( wait "$BACKEND_PID"; echo "[start] 백엔드 종료 — 컨테이너를 내린다" >&2; kill -TERM 1 ) &
+# 모든 변환이 실패하는 상태로 서비스된다.
+#
+# 서브셸 안에서 wait는 쓸 수 없다 — wait는 자기 자식만 기다릴 수 있는데
+# uvicorn은 부모 셸의 자식이라 "pid N is not a child of this shell"로 실패한다
+# (첫 배포 로그에서 실제로 확인). kill -0 폴링은 그 제약을 받지 않는다.
+(
+  while kill -0 "$BACKEND_PID" 2>/dev/null; do
+    sleep 5
+  done
+  echo "[start] 백엔드 종료 — 컨테이너를 내린다" >&2
+  kill -TERM 1
+) &
 
 # Space는 7860 포트를 외부에 노출한다.
 exec streamlit run streamlit_app.py \
