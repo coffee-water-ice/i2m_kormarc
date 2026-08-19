@@ -23,10 +23,6 @@ services:
         sync: false
       - key: NLK_CERT_KEY
         sync: false
-      - key: NAVER_SEARCH_KEY_ID
-        sync: false
-      - key: NAVER_SEARCH_KEY_SECRET
-        sync: false
       - key: GSPREAD_CREDENTIALS
         sync: false
       - key: FEEDBACK_DB_PATH
