@@ -254,8 +254,6 @@ def _settings_to_secrets(settings: Settings) -> dict:
         "KPIPA_API_KEY":   settings.kpipa_api_key,
         "DATA_GO_KR":      settings.data_go_kr,
         "NLK_CERT_KEY":    settings.nlk_cert_key,
-        "NAVER_SEARCH_KEY_ID":     settings.naver_search_key_id,
-        "NAVER_SEARCH_KEY_SECRET": settings.naver_search_key_secret,
     }
 
 
@@ -397,7 +395,7 @@ def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
         _add(tag_008)
 
         # ── 300 ──────────────────────────────────────────────
-        tag_300, f_300, illus_diag = build_300_field(item, isbn=isbn, secrets=secrets)
+        tag_300, f_300, illus_diag = build_300_field(item, secrets=secrets)
         all_tags.append(tag_300)
         if f_300:
             builder.rec.add_field(f_300)
@@ -521,7 +519,6 @@ async def health():
             "kpipa_api_key":       bool(settings.kpipa_api_key),
             "data_go_kr":          bool(settings.data_go_kr),
             "nlk_cert_key":        bool(settings.nlk_cert_key),
-            "naver_search":        bool(settings.naver_search_key_id and settings.naver_search_key_secret),
             "gspread_credentials": bool(settings.gspread_credentials),
         },
     }

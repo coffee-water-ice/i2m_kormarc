@@ -66,7 +66,6 @@ if secrets_configured:
         "kpipa_api_key":       "KPIPA",
         "data_go_kr":          "행정안전부",
         "nlk_cert_key":        "국립중앙도서관(NLK)",
-        "naver_search":        "네이버 검색",
         "gspread_credentials": "Google Sheets",
     }
     items = []

@@ -30,8 +30,7 @@ ENV_FILE = Path(__file__).resolve().parent.parent / "i2m_kormarc_2026_api_keys.e
 SECRET_KEYS = [
     "ALADIN_TTB_KEY", "ALADIN_TTB_KEY2", "ALADIN_TTB_KEY3",
     "OPENAI_API_KEY", "KPIPA_API_KEY", "DATA_GO_KR", "NLK_CERT_KEY",
-    "NAVER_SEARCH_KEY_ID", "NAVER_SEARCH_KEY_SECRET", "GSPREAD_CREDENTIALS",
-    "APP_PASSWORD",
+    "GSPREAD_CREDENTIALS", "APP_PASSWORD",
 ]
 
 # 민감하지 않은 설정 — Space "Variable"로 등록(설정 화면에서 값이 보인다)

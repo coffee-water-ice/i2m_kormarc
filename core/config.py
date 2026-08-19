@@ -69,10 +69,6 @@ class Settings(BaseSettings):
                      "원본(653 폴더)도 기본 비활성 — opt-in 기능.",
     )
 
-    # ── 네이버 (300 책소개 보강) ──────────────────────────────
-    naver_search_key_id: str = Field(default="", description="네이버 검색 API Client ID")
-    naver_search_key_secret: str = Field(default="", description="네이버 검색 API Client Secret")
-
     # ── Google Sheets (출판사 DB, 653 골든데이터) ───────────────
     gspread_credentials: str = Field(
         default="", description="Google 서비스 계정 JSON 문자열 (GSPREAD_CREDENTIALS)"

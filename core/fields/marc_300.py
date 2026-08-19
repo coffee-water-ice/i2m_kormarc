@@ -3,7 +3,15 @@ core/fields/marc_300.py
 300(형태사항) 필드 생성 규칙 — 실제 동작(260+300 폴더에서 이관).
 
 원본: 260+300/core/field_rules.py 의 300 섹션.
-알라딘 상세 페이지 크롤링 + 네이버 책소개 보강 + OpenAI 삽화 판정을 거쳐 300 필드를 생성한다.
+알라딘 상세 페이지 크롤링 + OpenAI 삽화 판정을 거쳐 300 필드를 생성한다.
+
+NOTE(네이버 책소개 보강 제거, 2026-08): 원래 알라딘 크롤링보다 먼저 네이버 책 검색
+API(book_adv.json)로 책소개를 보강했었는데, 실측 결과 이 엔드포인트가 이 앱 등록
+기준으로 항상 HTTP 404("SE05: 지원하지 않는 검색 api입니다")를 반환해 한 번도 성공한
+적이 없었다. 실패 시 조용히 ""를 반환하도록 짜여 있어서(로그도 안 남음) desc_text
+결정 로직이 이미 매번 알라딘 크롤링으로 폴백하고 있었다 — 즉 제거해도 최종 MARC
+출력은 동일하고, 매 변환마다 실패할 수밖에 없는 HTTP 요청(최대 8초 타임아웃 리스크)만
+없앤 것이다. NAVER_SEARCH_KEY_ID/SECRET도 core/config.py 등에서 함께 제거했다.
 
 NOTE(레이어링 잔재): 원본 구조를 그대로 이관해 알라딘 상세 페이지 HTTP 요청을
 이 파일이 직접 수행한다(api/aladin_client.py를 거치지 않음). 골격 우선 원칙에 따라
@@ -248,31 +256,6 @@ def _detect_illustrations_with_ai(
         return False, None, []
 
 
-def _fetch_naver_description(isbn: str, client_id: str, client_secret: str) -> str:
-    """네이버 책 검색 API(book_adv)로 책소개를 가져온다."""
-    if not client_id or not client_secret or not isbn:
-        return ""
-    try:
-        r = requests.get(
-            "https://openapi.naver.com/v1/search/book_adv.json",
-            params={"d_isbn": isbn, "display": 1},
-            headers={
-                "X-Naver-Client-Id":     client_id,
-                "X-Naver-Client-Secret": client_secret,
-            },
-            timeout=8,
-        )
-        if not r.ok:
-            return ""
-        items = r.json().get("items", [])
-        if not items:
-            return ""
-        raw = items[0].get("description", "")
-        return re.sub(r"<[^>]+>", "", raw).strip()
-    except Exception:
-        return ""
-
-
 def _parse_aladin_categories(soup: BeautifulSoup) -> list[str]:
     """알라딘 상세 페이지의 conts_info_list2 블록에서 분류 경로 목록을 추출한다."""
     cat_div = soup.select_one("div.conts_info_list2")
@@ -291,7 +274,7 @@ def _parse_aladin_categories(soup: BeautifulSoup) -> list[str]:
 
 
 def _parse_aladin_physical_info(
-    html: str, api_description: str = "", naver_description: str = "", openai_api_key: str = "",
+    html: str, api_description: str = "", openai_api_key: str = "",
     has_illustrator_role: bool = False,
 ) -> dict:
     """
@@ -319,8 +302,8 @@ def _parse_aladin_physical_info(
     title_text    = title_el.get_text(strip=True)    if title_el    else ""
     subtitle_text = subtitle_el.get_text(strip=True) if subtitle_el else ""
 
-    # 책소개: 네이버 API → 알라딘 HTML → TTB API 순서로 fallback
-    desc_text = naver_description or _find_section_text(soup, "책소개") or api_description
+    # 책소개: 알라딘 HTML → TTB API 순서로 fallback
+    desc_text = _find_section_text(soup, "책소개") or api_description
 
     # 출판사 제공 소개: 레이블이 책마다 다름 — 순서대로 시도
     pub_desc_text = ""
@@ -426,7 +409,6 @@ def _parse_aladin_physical_info(
         "toc_text": toc_text,
         "illus_diagnosis": {
             "sources": {
-                "네이버 책소개":   naver_description,
                 "제목":           title_text,
                 "부제":           subtitle_text,
                 "책소개":         desc_text,
@@ -441,7 +423,7 @@ def _parse_aladin_physical_info(
 
 
 def _fetch_aladin_detail_page(
-    link: str, api_description: str = "", naver_description: str = "", openai_api_key: str = "",
+    link: str, api_description: str = "", openai_api_key: str = "",
     has_illustrator_role: bool = False,
 ) -> tuple[dict, str | None]:
     """
@@ -465,7 +447,7 @@ def _fetch_aladin_detail_page(
         res.raise_for_status()
         res.encoding = "utf-8"
         return _parse_aladin_physical_info(
-            res.text, api_description, naver_description, openai_api_key,
+            res.text, api_description, openai_api_key,
             has_illustrator_role=has_illustrator_role,
         ), None
     except Exception as e:
@@ -481,14 +463,13 @@ def _fetch_aladin_detail_page(
 _EMPTY_DIAG = {"toc_text": "", "illus_diagnosis": {"sources": {}, "detected": []}}
 
 
-def build_300_field(item: dict, isbn: str = "", secrets: dict | None = None) -> tuple[str, Field, dict]:
+def build_300_field(item: dict, secrets: dict | None = None) -> tuple[str, Field, dict]:
     """
     알라딘 item dict에서 알라딘 상세 페이지 링크를 꺼내 300 필드를 생성한다.
 
     Args:
         item:    알라딘 API item dict
-        isbn:    ISBN-13 (네이버 API 호출용)
-        secrets: 런타임 시크릿 dict (NAVER_SEARCH_KEY_ID/SECRET 포함)
+        secrets: 런타임 시크릿 dict (OPENAI_API_KEY 포함)
 
     Returns:
         (mrk 문자열, pymarc.Field 객체, 진단 dict)
@@ -500,20 +481,7 @@ def build_300_field(item: dict, isbn: str = "", secrets: dict | None = None) -> 
     try:
         aladin_link     = (item or {}).get("link", "")
         api_description = (item or {}).get("description", "") or ""
-
-        # 네이버 책소개 수집
-        naver_description = ""
-        openai_api_key = (secrets or {}).get("OPENAI_API_KEY", "")
-        if isbn and secrets:
-            naver_description = _fetch_naver_description(
-                isbn,
-                (secrets or {}).get("NAVER_SEARCH_KEY_ID", ""),
-                (secrets or {}).get("NAVER_SEARCH_KEY_SECRET", ""),
-            )
-            if naver_description:
-                dbg(f"[300] 네이버 책소개 수집됨 ({len(naver_description)}자)")
-            else:
-                dbg("[300] 네이버 책소개 없음 (미수록 또는 키 미설정)")
+        openai_api_key  = (secrets or {}).get("OPENAI_API_KEY", "")
 
         if not aladin_link:
             dbg_err("[300] 알라딘 링크 없음 → 기본값 사용")
@@ -528,7 +496,6 @@ def build_300_field(item: dict, isbn: str = "", secrets: dict | None = None) -> 
         detail_result, err = _fetch_aladin_detail_page(
             aladin_link,
             api_description=api_description,
-            naver_description=naver_description,
             openai_api_key=openai_api_key,
             has_illustrator_role=has_illustrator_role,
         )
