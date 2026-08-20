@@ -34,7 +34,9 @@ from core.text_utils import (
 )
 from core import token_tracker
 
-ALADIN_SEARCH_URL = "http://www.aladin.co.kr/ttb/api/ItemSearch.aspx"
+# 알라딘 도메인 통합 공지(2026-08)에 따라 openapi.aladin.co.kr → aladin.co.kr로 이전됐다.
+# api/aladin_client.py의 ItemLookUp과 동일한 이유로 www 없이 https 직접 호출한다.
+ALADIN_SEARCH_URL = "https://aladin.co.kr/ttb/api/ItemSearch.aspx"
 ALADIN_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
