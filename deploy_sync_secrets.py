@@ -64,10 +64,18 @@ def main() -> int:
 
     from huggingface_hub import HfApi
     api = HfApi()
+    # 인증 실패와 네트워크 오류를 구분한다. 예전에는 모든 예외를 "인증 필요"로
+    # 안내해서, 일시적인 연결 끊김(ConnectError)에도 `hf auth login`을 다시 하게
+    # 만들었다. 원인이 다르면 대응도 다르다.
     try:
         who = api.whoami()
-    except Exception:
-        print("HF 인증이 필요합니다. `hf auth login`을 먼저 실행하세요.", file=sys.stderr)
+    except Exception as e:
+        name = type(e).__name__
+        if "Connect" in name or "Timeout" in name or "Network" in name:
+            print(f"HF 서버 연결 실패({name}). 네트워크 문제일 수 있으니 잠시 후 다시 실행하세요.",
+                  file=sys.stderr)
+        else:
+            print(f"HF 인증이 필요합니다. `hf auth login`을 먼저 실행하세요. ({name})", file=sys.stderr)
         return 1
     print(f"계정: {who.get('name')} → Space: {args.space}")
     print("모드:", "반영" if args.apply else "미리보기 (--apply 를 붙이면 실제 반영)")

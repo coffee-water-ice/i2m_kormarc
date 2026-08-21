@@ -77,7 +77,9 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from api_client import convert_isbn
+import requests
+
+from api_client import check_backend_health, convert_isbn, get_backend_url
 from auth_gate import require_password
 
 st.set_page_config(page_title="평가 시스템 | I2M KORMARC", page_icon="🧪", layout="wide")
@@ -130,6 +132,10 @@ EVAL_056_HEADERS: list[str] = [
     "056 1·2위비율", "056 검토필요(1/0)",
     "056 653유무(1/0)", "056 목차유무(1/0)", "056 책소개유무(1/0)",
     "056 미생성사유",
+    # GPT 호출이 성사됐는지. 크레딧 소진처럼 실행 도중 시작되는 장애를 건별로
+    # 남긴다 — 이 열이 0인 행은 653이 비어 있고 056 입력도 결손이라 채점에서
+    # 제외하거나 재실행해야 한다.
+    "GPT호출(1/0)", "GPT토큰",
 ]
 
 _LEGACY_NA = "미생성"
@@ -212,6 +218,16 @@ def _056_eval_values(meta: dict | None, is_legacy: bool) -> dict[str, str]:
     비워 둔다 — 이 열은 고도화 I2M의 오답 원인을 가리기 위한 것이다.
     """
     out = {h: "" for h in EVAL_056_HEADERS}
+
+    # GPT 호출 성사 여부는 기존·고도화 모두 기록한다. 기존 I2M은 056 자체를 GPT로
+    # 만들기 때문에, GPT가 죽으면 056이 통째로 비어 채점이 성립하지 않는다.
+    meta_all = meta or {}
+    if "gpt_called" in meta_all:
+        out["GPT호출(1/0)"] = "1" if meta_all["gpt_called"] else "0"
+    tok = (meta_all.get("token_usage") or {}).get("total_tokens")
+    if isinstance(tok, int):
+        out["GPT토큰"] = str(tok)
+
     if is_legacy:
         for h in ("056 2순위", "056 3순위", "056 1위확률", "056 2위확률",
                   "056 1·2위비율", "056 검토필요(1/0)"):
@@ -485,6 +501,34 @@ def _get_legacy_module():
 
 
 # ══════════════════════════════════════════════════════════════
+# OpenAI 실호출 점검 — 200건을 헛돌리지 않기 위한 안전장치
+# ══════════════════════════════════════════════════════════════
+#
+# 크레딧이 0원인 키는 인증을 통과하므로 "키 설정됨"으로 보이지만 모든 GPT 호출이
+# 실패한다. 이 상태로 평가를 돌리면:
+#   - 고도화: 653이 비고, 653을 입력으로 쓰는 056의 정확도가 함께 떨어진다
+#   - 기존:   056 자체를 GPT로 만들기 때문에 전건 미생성 → 일치율 0%
+# 두 경우 모두 결과가 무의미한데 화면에는 정상 종료로 보인다. 실제로 이 상태에서
+# 1건 테스트가 나온 적이 있어(653 빈 값, 토큰 0) 사전·중간 점검을 둔다.
+
+GPT_RECHECK_EVERY = 25  # 이 건수마다 재점검. 실행 도중 크레딧이 떨어지는 경우 대비.
+
+
+def _openai_live(force: bool = False) -> dict:
+    """백엔드에 OpenAI 실호출 가능 여부를 묻는다. force면 캐시를 무시하고 재검사."""
+    try:
+        if force:
+            r = requests.post(f"{get_backend_url()}/api/openai/recheck", timeout=60)
+            r.raise_for_status()
+            return r.json()
+        return check_backend_health().get("openai_live") or {}
+    except Exception as e:
+        # 점검 자체가 실패한 경우를 "정상"으로 간주하면 안 된다. 다만 점검 실패가
+        # 곧 GPT 실패는 아니므로 코드를 따로 두어 문구를 구분한다.
+        return {"ok": False, "code": "check_failed", "detail": f"점검 요청 실패: {e}"}
+
+
+# ══════════════════════════════════════════════════════════════
 # 배치 실행 + 결과 표시 — "생성 실행" 버튼과 "이어서 실행" 버튼이 공유한다
 # ══════════════════════════════════════════════════════════════
 
@@ -501,6 +545,27 @@ def _run_batch(
     progress = st.progress(0, text="준비 중...")
     status = st.empty()
     results: list[tuple[str, str, str, dict]] = []
+    gpt_alert = st.empty()
+
+    def _gpt_guard(done_count: int) -> bool:
+        """GPT_RECHECK_EVERY건마다 OpenAI 실호출을 재점검한다.
+
+        실패하면 실행을 중단한다 — 계속 돌려봐야 653이 빈 결과만 쌓이고, 그 결과가
+        체크포인트에 정상 결과처럼 저장되어 나중에 구분할 수 없게 된다. 여기까지의
+        결과는 이미 저장되어 있으므로 크레딧 충전 후 "이어서 실행"으로 재개하면 된다.
+        """
+        if done_count == 0 or done_count % GPT_RECHECK_EVERY:
+            return True
+        live = _openai_live(force=True)
+        if live.get("ok"):
+            return True
+        gpt_alert.error(
+            f"⛔ **{done_count}건 시점에 OpenAI 호출이 실패했습니다** — {live.get('detail', '')}\n\n"
+            "이후 결과는 653이 비고 056 정확도가 떨어지므로 실행을 중단합니다. "
+            "크레딧 충전 또는 키 교체 후 위 '이어서 실행'으로 재개하세요. "
+            f"여기까지 처리된 {done_count}건은 저장되어 있습니다."
+        )
+        return False
 
     if system_label.startswith("고도화"):
         # ISBN마다 개별 HTTP 요청(convert_isbn)을 보낸다 — 10건씩 convert_batch()로 묶으면
@@ -520,6 +585,8 @@ def _run_batch(
                 _append_checkpoint(ckpt_path, isbn, mrk_text, err, meta)
                 results.append((isbn, mrk_text, err, meta))
             progress.progress(i / total, text=f"{i}/{total} 완료")
+            if not _gpt_guard(i):
+                break
     else:
         legacy_module, source_label = _get_legacy_module()
         st.caption(f"실행 소스: {source_label}")
@@ -549,6 +616,10 @@ def _run_batch(
                 _append_checkpoint(ckpt_path, isbn, mrk_text, err, {})
                 results.append((isbn, mrk_text, err, {}))
             progress.progress(i / total, text=f"{i}/{total} 완료")
+            # 기존 I2M은 056을 GPT로 만들기 때문에 이 점검이 특히 중요하다 —
+            # GPT가 죽으면 056이 전건 비고 일치율이 0%로 나온다.
+            if not _gpt_guard(i):
+                break
 
     progress.empty()
     status.empty()
@@ -584,6 +655,18 @@ def _show_results(
         no_kw = sum(1 for r in rows if r.get("056 653유무(1/0)") == "0")
         line += f" · 1·2위 경합(검토 필요) {review}건 · 653 결손 {no_kw}건"
     st.info(line)
+
+    # GPT 호출이 실패한 건은 653이 비고 056 입력이 결손이라 채점에 쓸 수 없다.
+    # 조용히 넘어가면 그 행이 정상 채점 대상으로 섞여 들어간다.
+    gpt_fail = [r["isbn"] for r in rows if r.get("GPT호출(1/0)") == "0"]
+    if gpt_fail:
+        st.error(
+            f"⛔ **GPT 호출이 실패한 자료 {len(gpt_fail)}건** — 이 자료들은 653이 비어 있고 "
+            "056 모델 입력도 결손 상태라 채점에 사용할 수 없습니다. "
+            "원인을 해결한 뒤 해당 ISBN만 다시 실행하세요."
+        )
+        with st.expander(f"GPT 실패 ISBN 목록 ({len(gpt_fail)}건)"):
+            st.write(", ".join(gpt_fail))
 
     st.download_button(
         "CSV 파일 다운로드 (.csv)",
@@ -743,7 +826,25 @@ st.caption(
     "200건이면 상당히 오래 걸릴 수 있습니다."
 )
 
-if st.button("생성 실행", type="primary", disabled=not unique_isbns):
+# ── 실행 전 OpenAI 점검 ──────────────────────────────────────
+# 200건을 다 돌린 뒤에야 653이 전부 비었다는 걸 알게 되는 상황을 막는다.
+_live = _openai_live()
+if _live and not _live.get("ok"):
+    st.error(
+        f"⛔ **OpenAI 호출 불가 — 지금 실행하면 결과를 쓸 수 없습니다.**\n\n"
+        f"{_live.get('detail', '')}\n\n"
+        "- **고도화 I2M**: 653이 생성되지 않고, 653을 입력으로 쓰는 056의 정확도가 함께 떨어집니다.\n"
+        "- **기존 I2M**: 056을 GPT로 만들기 때문에 **전건 미생성**이 되어 일치율이 0%로 나옵니다."
+    )
+    if st.button("🔄 다시 확인"):
+        _openai_live(force=True)
+        st.rerun()
+elif _live.get("ok"):
+    st.caption("✅ OpenAI 실호출 점검 통과 — 실행 중에도 25건마다 재점검합니다.")
+
+_blocked = bool(_live) and not _live.get("ok")
+
+if st.button("생성 실행", type="primary", disabled=not unique_isbns or _blocked):
     total = len(unique_isbns)
 
     # 체크포인트 — (시스템, ISBN 목록)이 같으면 항상 같은 파일. 이미 끝난 건이 있으면

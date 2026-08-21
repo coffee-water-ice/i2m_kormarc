@@ -12,6 +12,7 @@ Streamlit 멀티페이지 앱의 진입점 겸 Home.
 
 from __future__ import annotations
 
+import requests
 import streamlit as st
 
 from api_client import check_backend_health, get_backend_url
@@ -93,6 +94,33 @@ if secrets_configured:
     st.caption("✅ 키가 설정되어 있음 · ⛔ 키 없음 — 해당 기능만 동작하지 않고 나머지 필드는 정상 생성됩니다.")
 else:
     st.markdown("⛔ 백엔드에 연결되지 않아 확인할 수 없습니다.")
+
+# ── OpenAI 실호출 점검 ────────────────────────────────────────
+# 위 "키 설정 여부"는 키가 있는지만 본다. 크레딧이 0원인 키는 인증을 통과해 ✅로
+# 표시되지만 모든 GPT 호출이 실패한다 — 실제로 이 상태로 653이 빈 값으로 생성되어
+# 평가 데이터가 오염될 뻔했다. 그래서 실호출 결과를 따로, 눈에 띄게 표시한다.
+_live = health.get("openai_live") or {}
+if _live:
+    if _live.get("ok"):
+        st.success("✅ OpenAI 실호출 정상 — 653·041·245·300의 GPT 기능이 동작합니다.")
+    else:
+        st.error(
+            f"⛔ **OpenAI 호출 실패** — {_live.get('detail', '원인 불명')}\n\n"
+            "653이 생성되지 않고, 041·245·300의 GPT 보조 판정도 빠집니다. "
+            "056은 653을 입력으로 쓰므로 정확도가 함께 떨어집니다. "
+            "**이 상태로 평가를 실행하면 결과를 쓸 수 없습니다.**"
+        )
+        if st.button("🔄 다시 확인 (크레딧 충전·키 교체 후)"):
+            try:
+                requests.post(f"{get_backend_url()}/api/openai/recheck", timeout=60)
+            except Exception as e:
+                st.warning(f"재확인 요청 실패: {e}")
+            _cached_health_check.clear()
+            st.rerun()
+    st.caption(
+        "키가 있는지가 아니라 **실제로 호출이 되는지**를 확인한 결과입니다(10분마다 재검사). "
+        "크레딧 소진·키 만료는 키 설정 여부만으로는 드러나지 않습니다."
+    )
 
 st.divider()
 

@@ -49,7 +49,7 @@ from pydantic import BaseModel, Field
 # 내부 모듈 — 새 골격 경로
 from core.config import Settings, get_settings, load_streamlit_secrets_into_env
 from core.debug_log import clear_debug_lines, dbg_err, get_debug_lines
-from core import token_tracker
+from core import llm_health, token_tracker
 from core.marc_builder import MarcBuilder, kormarc_tag_to_mrk, mrk_str_to_field
 from core.fields.marc_007_008 import build_007_field, build_008_field
 from core.fields.marc_020_950 import build_020_fields, build_950_field
@@ -481,6 +481,11 @@ def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
             "elapsed_ms": round((time.perf_counter() - start_time) * 1000),
             "token_usage": token_tracker.get_total(),
         }
+        # 이 변환에서 GPT 호출이 한 번이라도 성공했는지. 041/245/300/653은 모두
+        # 호출 직후 token_tracker.add()를 하므로, 합계가 0이면 전부 실패했다는 뜻이다.
+        # 크레딧 소진처럼 실행 도중에 시작되는 장애를 건별로 잡아내기 위한 것 —
+        # 200건을 돌리는 중간에 크레딧이 떨어지면 그 이후 결과가 조용히 오염된다.
+        meta["gpt_called"] = meta["token_usage"]["total_tokens"] > 0
         clear_debug_lines()
         token_tracker.clear()
 
@@ -506,6 +511,10 @@ async def health():
     헬스체크 + 시스템 상태. Streamlit Home 페이지가 이 응답 하나로 백엔드 연결
     여부·마지막 배포(갱신) 시각·커밋·외부 API 키 설정 여부를 표시한다(키 값 자체는
     절대 노출하지 않고 설정 유무만 boolean으로 반환).
+
+    openai_live는 키 설정 여부가 아니라 **실제로 호출이 되는지**다. 크레딧이 0원인
+    키는 인증을 통과해 secrets_configured에 True로 잡히지만 모든 GPT 호출이 실패한다
+    (실제 발생 사례 — core/llm_health.py 참고). 실호출 1회를 10분 캐시로 확인한다.
     """
     settings = get_settings()
     return {
@@ -523,7 +532,19 @@ async def health():
             "nlk_cert_key":        bool(settings.nlk_cert_key),
             "gspread_credentials": bool(settings.gspread_credentials),
         },
+        "openai_live": llm_health.check_openai(settings.openai_api_key or ""),
     }
+
+
+@app.post("/api/openai/recheck", tags=["운영"])
+async def openai_recheck():
+    """OpenAI 실호출 점검을 캐시 무시하고 다시 수행한다.
+
+    크레딧을 충전하거나 키를 교체한 직후, 10분 캐시가 만료되기를 기다리지 않고
+    바로 확인하기 위한 엔드포인트다.
+    """
+    settings = get_settings()
+    return llm_health.check_openai(settings.openai_api_key or "", force=True)
 
 
 @app.post("/api/convert", response_model=ConvertResult, tags=["MARC 변환"])

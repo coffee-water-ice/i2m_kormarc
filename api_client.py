@@ -48,7 +48,11 @@ def check_backend_health() -> dict:
     마지막 배포(갱신) 시각·커밋·외부 API 키 설정 여부를 표시한다.
 
     Returns:
-        {"ok": bool, "detail": str, "version": dict | None, "secrets_configured": dict | None}
+        {"ok": bool, "detail": str, "version": dict | None, "secrets_configured": dict | None,
+         "openai_live": dict | None}
+
+    openai_live는 키 설정 여부가 아니라 실제 호출 성공 여부다. 크레딧이 0원인 키는
+    secrets_configured에서는 True로 보이므로 이 값을 따로 확인해야 한다.
     """
     try:
         # Render 무료/스타터 플랜은 일정 시간 요청이 없으면 슬립 상태로 들어가고,
@@ -63,15 +67,17 @@ def check_backend_health() -> dict:
             "detail": data.get("status", "ok"),
             "version": data.get("version"),
             "secrets_configured": data.get("secrets_configured"),
+            "openai_live": data.get("openai_live"),
         }
     except requests.exceptions.ConnectionError:
         return {"ok": False, "detail": "백엔드 서버에 연결할 수 없습니다",
-                "version": None, "secrets_configured": None}
+                "version": None, "secrets_configured": None, "openai_live": None}
     except requests.exceptions.Timeout:
         return {"ok": False, "detail": "백엔드 응답 시간 초과 (Render 콜드 스타트 중일 수 있음 — 잠시 후 새로고침해 보세요)",
-                "version": None, "secrets_configured": None}
+                "version": None, "secrets_configured": None, "openai_live": None}
     except Exception as e:
-        return {"ok": False, "detail": str(e), "version": None, "secrets_configured": None}
+        return {"ok": False, "detail": str(e), "version": None, "secrets_configured": None,
+                "openai_live": None}
 
 
 # ── MARC 변환 ────────────────────────────────────────────────
