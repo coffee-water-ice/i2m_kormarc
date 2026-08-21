@@ -36,6 +36,10 @@ CSV 컬럼 구성:
   없으면 빈 값으로 둔다.
 - 고정 컬럼에 없는 태그·서브필드(또는 020의 3번째 이상 반복처럼 고정 컬럼이 다루지 않는
   반복분)가 새로 나오면, 처음 발견된 순서대로 헤더를 동적으로 추가한다(사용자 지시).
+- 위 33개 뒤에 056 채점 전용 컬럼 10개(EVAL_056_HEADERS)를 붙인다. 2·3순위 후보, 1·2위
+  확률과 그 비율, 입력 결손(653/목차/책소개) 여부로, 056 채점기준표(공통_056 시트)의
+  R~Y열에 대응한다. 이 값들은 MRK 문자열에는 남지 않고 백엔드 응답 meta에만 있어서
+  체크포인트에 meta를 함께 저장한다. 기존 I2M은 2·3순위가 원리적으로 없어 "미생성".
 - "식별기호 삭제 + 정규화": MRK의 "$a"/"$b" 같은 서브필드 식별기호는 컬럼 이름으로 흡수되고
   셀 값에는 남지 않는다. 같은 서브필드가 한 필드 안에서 반복되면 ", "로, 같은 태그가 필드
   자체로 반복되면(700/710/653 등 다권/다저자) " ; "로 이어붙인다. 020만 예외적으로 반복
@@ -111,6 +115,25 @@ FIXED_HEADERS: list[str] = [
     "950 $b",
 ]
 
+# ── 056 평가 전용 컬럼 ──────────────────────────────────────────
+# 056 채점기준표(공통_056 시트)는 최종 분류기호 하나만으로는 채울 수 없다. 2·3순위
+# 후보, 1·2위 확률 비율, 입력 결손 여부가 각각 별도 열로 들어간다. 이 값들은 백엔드가
+# 이미 응답 meta에 담아 보내주고 있으므로(app.py의 kdc_candidates/kdc_margin_ratio/
+# kdc_input_presence) 모델을 다시 돌릴 필요 없이 옮겨 적기만 하면 된다.
+#
+# 기존 I2M(2025년 코드)은 GPT가 분류기호 하나만 답하는 구조라 2·3순위와 확률이
+# 아예 존재하지 않는다. 빈칸으로 두면 "실행은 됐는데 값이 안 담긴 것"과 구분이
+# 안 되므로 명시적으로 "미생성"이라고 적는다.
+EVAL_056_HEADERS: list[str] = [
+    "056 2순위", "056 3순위",
+    "056 1위확률", "056 2위확률",
+    "056 1·2위비율", "056 검토필요(1/0)",
+    "056 653유무(1/0)", "056 목차유무(1/0)", "056 책소개유무(1/0)",
+    "056 미생성사유",
+]
+
+_LEGACY_NA = "미생성"
+
 # "02010$a" = 020 필드가 두 번 나올 때(개별 ISBN + 세트 ISBN 등) 두 번째 반복의 $a.
 # 020 계열 나머지 헤더("020  $a/$g/$c")는 첫 번째 반복만 담는다 — 그래서 아래에서
 # 020만 occurrence를 "agg"(전체 집계)가 아니라 특정 회차로 고정해 처리한다.
@@ -181,10 +204,64 @@ def _aggregate_subfield(occurrences: list[list[tuple[str, str]]], code: str) -> 
     return " ; ".join(v for v in per_occurrence if v)
 
 
-def _normalize_row(no: int, isbn: str, mrk_text: str, error: str) -> dict[str, str]:
+def _056_eval_values(meta: dict | None, is_legacy: bool) -> dict[str, str]:
+    """응답 meta의 056 진단 정보를 채점기준표 열 형식으로 옮긴다.
+
+    is_legacy=True(기존 I2M)면 2·3순위·확률이 원리적으로 존재하지 않으므로 "미생성"을
+    넣는다. 입력 결손 열도 마찬가지로 기존 I2M은 모델 입력이라는 개념 자체가 없어
+    비워 둔다 — 이 열은 고도화 I2M의 오답 원인을 가리기 위한 것이다.
+    """
+    out = {h: "" for h in EVAL_056_HEADERS}
+    if is_legacy:
+        for h in ("056 2순위", "056 3순위", "056 1위확률", "056 2위확률",
+                  "056 1·2위비율", "056 검토필요(1/0)"):
+            out[h] = _LEGACY_NA
+        return out
+
+    meta = meta or {}
+    cands = meta.get("kdc_candidates") or []
+    # candidates는 [{"kdc": "33", "prob": 0.71}, ...] 형태이며 확률 내림차순이다.
+    if len(cands) > 1:
+        out["056 2순위"] = str(cands[1].get("kdc", ""))
+        out["056 2위확률"] = f"{cands[1].get('prob', ''):.4f}" if isinstance(cands[1].get("prob"), (int, float)) else ""
+    if len(cands) > 2:
+        out["056 3순위"] = str(cands[2].get("kdc", ""))
+    if cands and isinstance(cands[0].get("prob"), (int, float)):
+        out["056 1위확률"] = f"{cands[0]['prob']:.4f}"
+
+    ratio = meta.get("kdc_margin_ratio")
+    if isinstance(ratio, (int, float)):
+        out["056 1·2위비율"] = str(ratio)
+    # low_confidence는 항상 True/False로 오지만, 056 자체가 안 만들어진 건은
+    # 판정 대상이 아니라 빈칸이어야 한다(0으로 적으면 "검토 불필요"로 읽힌다).
+    if meta.get("tag_056"):
+        out["056 검토필요(1/0)"] = "1" if meta.get("kdc_low_confidence") else "0"
+
+    presence = meta.get("kdc_input_presence") or {}
+    for header, key in (
+        ("056 653유무(1/0)", "keywords"),
+        ("056 목차유무(1/0)", "toc"),
+        ("056 책소개유무(1/0)", "description"),
+    ):
+        if key in presence:
+            out[header] = "1" if presence[key] else "0"
+
+    out["056 미생성사유"] = meta.get("kdc_reason", "") or ""
+    return out
+
+
+def _normalize_row(
+    no: int,
+    isbn: str,
+    mrk_text: str,
+    error: str,
+    meta: dict | None = None,
+    is_legacy: bool = False,
+) -> dict[str, str]:
     row: dict[str, str] = {"no.": str(no), "isbn": isbn}
     for h in FIXED_HEADERS:
         row.setdefault(h, "")
+    row.update(_056_eval_values(meta, is_legacy))
 
     if error or not (mrk_text or "").strip():
         return row
@@ -231,14 +308,15 @@ def _normalize_row(no: int, isbn: str, mrk_text: str, error: str) -> dict[str, s
 
 
 def _build_dataframe(rows: list[dict[str, str]]) -> pd.DataFrame:
-    seen = set(FIXED_HEADERS)
+    base_headers = FIXED_HEADERS + EVAL_056_HEADERS
+    seen = set(base_headers)
     dynamic_cols: list[str] = []
     for row in rows:
         for k in row:
             if k not in seen:
                 seen.add(k)
                 dynamic_cols.append(k)
-    all_headers = FIXED_HEADERS + dynamic_cols
+    all_headers = base_headers + dynamic_cols
     return pd.DataFrame([{h: row.get(h, "") for h in all_headers} for row in rows])
 
 
@@ -252,6 +330,14 @@ def _to_csv_bytes(df: pd.DataFrame) -> bytes:
 
 CHECKPOINT_DIR = Path(__file__).resolve().parents[1] / "output" / "eval_checkpoints"
 _SYSTEM_SLUG = {"고도화": "advanced", "기존": "legacy"}
+
+# 체크포인트에 남길 meta 키 — 056 채점에 실제로 쓰는 것만. meta에는 debug_lines처럼
+# 건당 수십 KB짜리 값도 들어있어 통째로 저장하면 200건에 수 MB가 된다.
+_META_KEEP_KEYS = {
+    "kdc_candidates", "kdc_low_confidence", "kdc_margin_ratio",
+    "kdc_edition", "kdc_reason", "kdc_model_version", "kdc_input_presence",
+    "tag_056", "tag_653", "aladin_title", "category_name",
+}
 
 
 def _system_slug(system_label: str) -> str:
@@ -309,11 +395,26 @@ def _load_checkpoint(path: Path) -> tuple[dict | None, dict[str, dict]]:
     return meta, done
 
 
-def _append_checkpoint(path: Path, isbn: str, mrk_text: str, error: str) -> None:
+def _append_checkpoint(
+    path: Path, isbn: str, mrk_text: str, error: str, meta: dict | None = None
+) -> None:
     """ISBN 한 건이 끝나는 즉시 디스크에 기록 + fsync. 세션이 중간에 끊기거나 죽어도
-    여기까지 처리된 결과는 남아서, 다음에 같은 입력으로 다시 실행하면 이어서 처리된다."""
+    여기까지 처리된 결과는 남아서, 다음에 같은 입력으로 다시 실행하면 이어서 처리된다.
+
+    meta에는 056 후보·확률처럼 MRK 문자열에는 남지 않는 진단값이 들어 있다. 예전에는
+    저장하지 않아 CSV를 뽑을 때 이미 받아온 값이 버려졌다. 다만 meta 전체는 디버그
+    로그까지 포함해 건당 수십 KB라 체크포인트가 불필요하게 커지므로, 채점에 쓰는
+    키만 골라 남긴다.
+    """
+    slim = {k: v for k, v in (meta or {}).items() if k in _META_KEEP_KEYS}
     with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps({"isbn": isbn, "mrk_text": mrk_text, "error": error}, ensure_ascii=False) + "\n")
+        f.write(
+            json.dumps(
+                {"isbn": isbn, "mrk_text": mrk_text, "error": error, "meta": slim},
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
         f.flush()
         os.fsync(f.fileno())
 
@@ -326,9 +427,13 @@ def _list_checkpoints() -> list[Path]:
 
 def _checkpoint_dataframe(path: Path) -> pd.DataFrame:
     """체크포인트에 지금까지 저장된 결과를(진행 중이든 완료든) 그 자리에서 정규화 CSV로 만든다."""
-    _, done = _load_checkpoint(path)
+    meta, done = _load_checkpoint(path)
+    is_legacy = not str((meta or {}).get("system", "")).startswith("고도화")
     rows = [
-        _normalize_row(no, rec["isbn"], rec.get("mrk_text", ""), rec.get("error") or "")
+        _normalize_row(
+            no, rec["isbn"], rec.get("mrk_text", ""), rec.get("error") or "",
+            meta=rec.get("meta"), is_legacy=is_legacy,
+        )
         for no, rec in enumerate(done.values(), start=1)
     ]
     return _build_dataframe(rows)
@@ -388,14 +493,14 @@ def _run_batch(
     target_isbns: list[str],
     ckpt_path: Path,
     done_map: dict[str, dict],
-) -> list[tuple[str, str, str]]:
+) -> list[tuple[str, str, str, dict]]:
     """target_isbns를 순서대로 처리한다. done_map(체크포인트에 이미 있는 결과)에 있는 건
     재처리하지 않고 그대로 쓰고, 없는 건 새로 생성해서 즉시 체크포인트에 저장한다.
-    (isbn, mrk_text, error) 리스트를 target_isbns 순서 그대로 반환한다."""
+    (isbn, mrk_text, error, meta) 리스트를 target_isbns 순서 그대로 반환한다."""
     total = len(target_isbns)
     progress = st.progress(0, text="준비 중...")
     status = st.empty()
-    results: list[tuple[str, str, str]] = []
+    results: list[tuple[str, str, str, dict]] = []
 
     if system_label.startswith("고도화"):
         # ISBN마다 개별 HTTP 요청(convert_isbn)을 보낸다 — 10건씩 convert_batch()로 묶으면
@@ -404,13 +509,16 @@ def _run_batch(
         for i, isbn in enumerate(target_isbns, start=1):
             if isbn in done_map:
                 rec = done_map[isbn]
-                results.append((isbn, rec.get("mrk_text", ""), rec.get("error") or ""))
+                results.append(
+                    (isbn, rec.get("mrk_text", ""), rec.get("error") or "", rec.get("meta") or {})
+                )
             else:
                 status.text(f"{i} / {total} 생성 중... (고도화 I2M)")
                 r = convert_isbn(isbn)
                 mrk_text, err = r.get("mrk_text", ""), r.get("error") or ""
-                _append_checkpoint(ckpt_path, isbn, mrk_text, err)
-                results.append((isbn, mrk_text, err))
+                meta = r.get("meta") or {}
+                _append_checkpoint(ckpt_path, isbn, mrk_text, err, meta)
+                results.append((isbn, mrk_text, err, meta))
             progress.progress(i / total, text=f"{i}/{total} 완료")
     else:
         legacy_module, source_label = _get_legacy_module()
@@ -418,7 +526,9 @@ def _run_batch(
         for i, isbn in enumerate(target_isbns, start=1):
             if isbn in done_map:
                 rec = done_map[isbn]
-                results.append((isbn, rec.get("mrk_text", ""), rec.get("error") or ""))
+                results.append(
+                    (isbn, rec.get("mrk_text", ""), rec.get("error") or "", rec.get("meta") or {})
+                )
             else:
                 status.text(f"{i} / {total} 생성 중... (기존 I2M)")
                 ph = st.empty()
@@ -434,8 +544,10 @@ def _run_batch(
                 except Exception as e:
                     mrk_text, err = "", str(e)
                 ph.empty()  # 원본 내부의 st.write/warning/expander 디버그 출력을 지운다
-                _append_checkpoint(ckpt_path, isbn, mrk_text, err)
-                results.append((isbn, mrk_text, err))
+                # 기존 I2M은 run_and_export()가 MRK 문자열만 돌려준다 — 056 후보·확률
+                # 같은 진단값이 애초에 없으므로 meta는 빈 dict다.
+                _append_checkpoint(ckpt_path, isbn, mrk_text, err, {})
+                results.append((isbn, mrk_text, err, {}))
             progress.progress(i / total, text=f"{i}/{total} 완료")
 
     progress.empty()
@@ -443,22 +555,35 @@ def _run_batch(
     return results
 
 
-def _show_results(results: list[tuple[str, str, str]], ckpt_path: Path) -> None:
+def _show_results(
+    results: list[tuple[str, str, str, dict]], ckpt_path: Path, system_label: str
+) -> None:
     total = len(results)
+    is_legacy = not system_label.startswith("고도화")
     rows = [
-        _normalize_row(no, isbn, mrk_text, err)
-        for no, (isbn, mrk_text, err) in enumerate(results, start=1)
+        _normalize_row(no, isbn, mrk_text, err, meta=meta, is_legacy=is_legacy)
+        for no, (isbn, mrk_text, err, meta) in enumerate(results, start=1)
     ]
     df = _build_dataframe(rows)
 
-    success_count = sum(1 for _, _, err in results if not err)
+    success_count = sum(1 for _, _, err, _ in results if not err)
     fail_count = total - success_count
     st.success(f"생성 완료 — 성공 {success_count}건 / 실패 {fail_count}건")
 
     if fail_count:
-        failed = [isbn for isbn, _, err in results if err]
+        failed = [isbn for isbn, _, err, _ in results if err]
         with st.expander(f"실패 목록 ({fail_count}건)"):
             st.write(", ".join(failed))
+
+    # 056은 채점 대상이라 몇 건이 실제로 생성됐는지 여기서 바로 보여준다. 200건을
+    # 다 돌린 뒤 CSV를 열어서야 "056이 절반만 나왔네"를 알게 되면 늦다.
+    made_056 = sum(1 for r in rows if r.get("056 $a"))
+    line = f"056 생성: {made_056}/{total}건"
+    if not is_legacy:
+        review = sum(1 for r in rows if r.get("056 검토필요(1/0)") == "1")
+        no_kw = sum(1 for r in rows if r.get("056 653유무(1/0)") == "0")
+        line += f" · 1·2위 경합(검토 필요) {review}건 · 653 결손 {no_kw}건"
+    st.info(line)
 
     st.download_button(
         "CSV 파일 다운로드 (.csv)",
@@ -548,7 +673,7 @@ if "eval_resume_ckpt" in st.session_state:
         _resume_results = _run_batch(
             _resume_meta["system"], _resume_meta["isbns"], _resume_path, _resume_done
         )
-        _show_results(_resume_results, _resume_path)
+        _show_results(_resume_results, _resume_path, _resume_meta["system"])
         st.divider()
     else:
         st.error("이 체크포인트에는 ISBN 목록이 저장되어 있지 않아 이어서 실행할 수 없습니다.")
@@ -630,4 +755,4 @@ if st.button("생성 실행", type="primary", disabled=not unique_isbns):
         st.info(f"저장된 중간 결과 발견 — {len(done_map)}/{total}건은 건너뛰고 이어서 진행합니다.")
 
     results = _run_batch(system, unique_isbns, ckpt_path, done_map)
-    _show_results(results, ckpt_path)
+    _show_results(results, ckpt_path, system)

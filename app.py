@@ -465,6 +465,8 @@ def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
             "kdc_margin_ratio": diag_056.get("margin_ratio"),
             "kdc_edition": diag_056.get("edition", ""),
             "kdc_reason": diag_056.get("reason", ""),
+            # 평가 시트의 "입력 결손"(653/목차/책소개 유무) 열이 쓰는 값.
+            "kdc_input_presence": diag_056.get("input_presence", {}),
             "kdc_model_version": settings.kdc_model_version,
             "category_id":   (item or {}).get("categoryId", ""),
             "category_name": (item or {}).get("categoryName", ""),

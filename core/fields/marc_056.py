@@ -153,7 +153,26 @@ def build_056_field(
             "reason": str,        # 생성 못 한 경우의 사유
         }
     """
-    diag: dict = {"candidates": [], "low_confidence": False, "input_chars": 0, "reason": ""}
+    # input_presence: 모델 입력 5개 필드가 각각 실제로 채워졌는지. 평가 시트의
+    # "입력 결손" 열(653/목차/책소개 유무)이 이 값을 그대로 쓴다 — 틀린 예측이
+    # 모델 탓인지 입력이 비어서인지를 사후에 가르기 위한 것이라, 모델 가용 여부와
+    # 무관하게 항상 채워야 한다(모델이 꺼져 있어도 입력 결손은 기록되어야 한다).
+    _keywords = _keywords_from_653(tag_653)
+    _toc = toc_text or kpipa_toc
+    _desc = (item or {}).get("description", "")
+    diag: dict = {
+        "candidates": [],
+        "low_confidence": False,
+        "input_chars": 0,
+        "reason": "",
+        "input_presence": {
+            "title": bool(_clean((item or {}).get("title", ""))),
+            "category": bool(_clean((item or {}).get("categoryName", ""))),
+            "keywords": bool(_clean(_keywords)),
+            "toc": bool(_clean(_toc)),
+            "description": bool(_clean(_desc)),
+        },
+    }
 
     available, why = kdc_model.availability()
     if not available:
@@ -164,9 +183,9 @@ def build_056_field(
     text = build_model_input(
         title=(item or {}).get("title", ""),
         category=(item or {}).get("categoryName", ""),
-        keywords=_keywords_from_653(tag_653),
-        toc=toc_text or kpipa_toc,
-        description=(item or {}).get("description", ""),
+        keywords=_keywords,
+        toc=_toc,
+        description=_desc,
     )
     diag["input_chars"] = len(text)
     if not text:
