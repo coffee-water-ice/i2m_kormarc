@@ -51,14 +51,14 @@ st.markdown("**백엔드 및 배포**")
 # 백엔드 주소를 그대로 보여주면 배포 환경에서 "localhost:8000"으로 표시되어
 # 이용자가 "내 PC에서만 동작하나?"로 오해한다. 실제로는 Streamlit이 서버에서
 # 화면을 그리므로, 이 localhost는 방문자 PC가 아니라 컨테이너 내부를 가리킨다.
-# 주소를 감추지는 않되(디버깅에 필요) 무엇을 뜻하는지 함께 표시한다.
+# 주소를 감추지는 않되(디버깅에 필요) 눈에 먼저 들어오는 문구는 "어디서 접속해도
+# 된다"는 결론이어야 한다. 주소 자체는 캡션으로 내린다.
 _backend_url = get_backend_url()
 if "localhost" in _backend_url or "127.0.0.1" in _backend_url:
-    st.markdown(
-        f"🔗 백엔드 주소: `{_backend_url}` "
-        "<span style='color:gray'>— 같은 서버 안에서 통신하는 내부 주소입니다. "
-        "이용자 PC와 무관하며 어디서 접속해도 동일하게 동작합니다.</span>",
-        unsafe_allow_html=True,
+    st.markdown("🔗 백엔드 위치: 이 사이트와 **같은 서버 안**")
+    st.caption(
+        f"내부 주소 `{_backend_url}` 로 연결합니다. 이 주소는 서버 안에서만 쓰는 것이라 "
+        "이용자 PC와는 관계가 없고, 누가 어느 컴퓨터에서 접속하든 똑같이 동작합니다."
     )
 else:
     st.markdown(f"🔗 백엔드 주소: `{_backend_url}`")
