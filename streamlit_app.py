@@ -47,7 +47,21 @@ version = health.get("version") or {}
 secrets_configured = health.get("secrets_configured")
 
 st.markdown("**백엔드 및 배포**")
-st.markdown(f"🔗 백엔드 주소: `{get_backend_url()}`")
+
+# 백엔드 주소를 그대로 보여주면 배포 환경에서 "localhost:8000"으로 표시되어
+# 이용자가 "내 PC에서만 동작하나?"로 오해한다. 실제로는 Streamlit이 서버에서
+# 화면을 그리므로, 이 localhost는 방문자 PC가 아니라 컨테이너 내부를 가리킨다.
+# 주소를 감추지는 않되(디버깅에 필요) 무엇을 뜻하는지 함께 표시한다.
+_backend_url = get_backend_url()
+if "localhost" in _backend_url or "127.0.0.1" in _backend_url:
+    st.markdown(
+        f"🔗 백엔드 주소: `{_backend_url}` "
+        "<span style='color:gray'>— 같은 서버 안에서 통신하는 내부 주소입니다. "
+        "이용자 PC와 무관하며 어디서 접속해도 동일하게 동작합니다.</span>",
+        unsafe_allow_html=True,
+    )
+else:
+    st.markdown(f"🔗 백엔드 주소: `{_backend_url}`")
 if health["ok"]:
     st.markdown(f"✅ 백엔드 연결 정상 ({health['detail']})")
 else:
@@ -68,12 +82,23 @@ if secrets_configured:
         "nlk_cert_key":        "국립중앙도서관(NLK)",
         "gspread_credentials": "Google Sheets",
     }
+    # 키가 설정되어 있어도 제공처가 서비스를 종료하면 기능은 동작하지 않는다.
+    # ✅만 보고 "된다"고 읽지 않도록 알려진 사례를 별도 표시한다.
+    _KNOWN_ISSUES = {
+        "naver_search": "제공처 API 종료 — 키와 무관하게 사용 불가",
+    }
     items = []
     for key, label in _SECRET_LABELS.items():
         ok = secrets_configured.get(key, False)
-        icon = "✅" if ok else "⛔"
-        items.append(f"{icon} {label}")
+        if ok and key in _KNOWN_ISSUES:
+            items.append(f"⚠️ {label}")
+        else:
+            items.append(f"{'✅' if ok else '⛔'} {label}")
     st.markdown("  ·  ".join(items))
+    st.caption("✅ 키 설정됨 · ⛔ 키 없음 · ⚠️ 키는 있으나 사용 불가")
+    for key, reason in _KNOWN_ISSUES.items():
+        if secrets_configured.get(key):
+            st.caption(f"⚠️ {_SECRET_LABELS[key]}: {reason}")
 else:
     st.markdown("⛔ 백엔드에 연결되지 않아 확인할 수 없습니다.")
 
