@@ -50,18 +50,21 @@ st.markdown("**백엔드 및 배포**")
 
 # 백엔드 주소를 그대로 보여주면 배포 환경에서 "localhost:8000"으로 표시되어
 # 이용자가 "내 PC에서만 동작하나?"로 오해한다. 실제로는 Streamlit이 서버에서
-# 화면을 그리므로, 이 localhost는 방문자 PC가 아니라 컨테이너 내부를 가리킨다.
-# 주소를 감추지는 않되(디버깅에 필요) 눈에 먼저 들어오는 문구는 "어디서 접속해도
-# 된다"는 결론이어야 한다. 주소 자체는 캡션으로 내린다.
+# 화면을 그리므로, 이 localhost는 방문자 PC가 아니라 서버 자신을 가리킨다.
+# 주소를 감추지는 않되(디버깅에 필요) 왜 localhost인지를 함께 적는다.
+# localhost는 서버의 이름이 아니라 "자기 자신"을 뜻하는 주소이므로, 문구에서
+# 서버 이름처럼 읽히지 않게 쓴다.
 _backend_url = get_backend_url()
 if "localhost" in _backend_url or "127.0.0.1" in _backend_url:
-    st.markdown("🔗 백엔드 위치: 이 사이트와 **같은 서버 안**")
+    st.markdown(f"🔗 백엔드 주소: `{_backend_url}` (이 사이트와 **같은 서버 안**)")
     st.caption(
-        f"내부 주소 `{_backend_url}` 로 연결합니다. 이 주소는 서버 안에서만 쓰는 것이라 "
-        "이용자 PC와는 관계가 없고, 누가 어느 컴퓨터에서 접속하든 똑같이 동작합니다."
+        "이 웹앱은 서버 1대 안에 화면(Streamlit) 코드와 백엔드(FastAPI) 코드가 함께 들어가 있습니다. "
+        "따라서 백엔드 서버는 웹앱 서버와 같은 서버이며, 화면 코드가 백엔드를 부를 때 "
+        "자기 자신을 가리키는 `localhost` 주소를 씁니다. "
+        "이용자 PC와는 관계가 없어 누가 어느 컴퓨터에서 접속하든 똑같이 동작합니다."
     )
 else:
-    st.markdown(f"🔗 백엔드 주소: `{_backend_url}`")
+    st.markdown(f"🔗 백엔드 주소: `{_backend_url}` (별도 서버)")
 if health["ok"]:
     st.markdown(f"✅ 백엔드 연결 정상 ({health['detail']})")
 else:
