@@ -82,23 +82,12 @@ if secrets_configured:
         "nlk_cert_key":        "국립중앙도서관(NLK)",
         "gspread_credentials": "Google Sheets",
     }
-    # 키가 설정되어 있어도 제공처가 서비스를 종료하면 기능은 동작하지 않는다.
-    # ✅만 보고 "된다"고 읽지 않도록 알려진 사례를 별도 표시한다.
-    _KNOWN_ISSUES = {
-        "naver_search": "제공처 API 종료 — 키와 무관하게 사용 불가",
-    }
     items = []
     for key, label in _SECRET_LABELS.items():
         ok = secrets_configured.get(key, False)
-        if ok and key in _KNOWN_ISSUES:
-            items.append(f"⚠️ {label}")
-        else:
-            items.append(f"{'✅' if ok else '⛔'} {label}")
+        items.append(f"{'✅' if ok else '⛔'} {label}")
     st.markdown("  ·  ".join(items))
-    st.caption("✅ 키 설정됨 · ⛔ 키 없음 · ⚠️ 키는 있으나 사용 불가")
-    for key, reason in _KNOWN_ISSUES.items():
-        if secrets_configured.get(key):
-            st.caption(f"⚠️ {_SECRET_LABELS[key]}: {reason}")
+    st.caption("✅ 키가 설정되어 있음 · ⛔ 키 없음 — 해당 기능만 동작하지 않고 나머지 필드는 정상 생성됩니다.")
 else:
     st.markdown("⛔ 백엔드에 연결되지 않아 확인할 수 없습니다.")
 
