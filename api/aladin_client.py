@@ -68,7 +68,11 @@ def get_aladin_item_by_isbn(isbn: str, secrets: dict) -> tuple[dict, str | None]
     if not keys:
         return {}, "ALADIN_TTB_KEY가 설정되지 않았습니다."
 
-    url = "http://www.aladin.co.kr/ttb/api/ItemLookUp.aspx"
+    # 알라딘 도메인 통합 공지(2026-08, "보안 정책 강화")에 따라 openapi.aladin.co.kr →
+    # aladin.co.kr로 이전됐다. www 없는 이 도메인으로 직접 https 호출한다 — http://로
+    # 부르면 301로 https://www.aladin.co.kr로 리다이렉트되는데, 그 첫 요청(ttbkey가
+    # 쿼리스트링에 담김) 자체가 평문으로 나가는 구간이 생겨 안전하지 않다.
+    url = "https://aladin.co.kr/ttb/api/ItemLookUp.aspx"
     base_params = {
         "itemIdType": "ISBN13",
         "ItemId": isbn,
