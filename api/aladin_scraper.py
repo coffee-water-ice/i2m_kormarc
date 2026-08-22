@@ -1103,7 +1103,12 @@ def gpt_orig_info_lookup(
 #                    ID를 파싱한 뒤 wauthor_overview 크롤링 — 네트워크 요청 최대 2회
 
 _TRANSLATOR_ROLE_STRICT: tuple[str, ...] = ("옮긴이", "역자", "옮김", "번역")
-_WRITER_ROLE_KEYS:       tuple[str, ...] = ("지은이", "지음", "글")
+_WRITER_ROLE_KEYS:       tuple[str, ...] = (
+    "지은이", "지음", "글",
+    "엮은이", "엮음", "편자", "편저자", "편저", "편",
+    "공저자", "공저", "공동저자",
+    "감수",
+)
 
 # API subInfo.authors 에서 Bio를 꺼낼 필드 우선순위
 _API_BIO_KEYS: tuple[str, ...] = (
@@ -1140,6 +1145,12 @@ def _role_is_writer(role: str) -> bool:
     """저자(지은이) 역할 여부 판별."""
     r = (role or "").strip()
     return any(k in r for k in _WRITER_ROLE_KEYS)
+
+
+def _role_is_planner(role: str) -> bool:
+    """기획 역할 여부 판별 — 저자 없을 때 폴백으로 사용."""
+    r = (role or "").strip()
+    return "기획" in r
 
 
 def _collect_bio_from_api(item: dict, target_name: str) -> str:
@@ -1374,7 +1385,7 @@ class AladinAuthorScraper:
 
     # ── 공개 인터페이스 ──────────────────────────────────────
 
-    def fetch_bios(self, item: dict) -> tuple[str, str]:
+    def fetch_bios(self, item: dict) -> tuple[dict[str, str], str]:
         """
         API-First 방식으로 저자·역자 Bio를 수집.
 
@@ -1382,6 +1393,12 @@ class AladinAuthorScraper:
         ----------
         item : 알라딘 API ItemLookUp 응답의 item dict
                (subInfo.authors, author, fulldescription 등 포함)
+
+        반환
+        ----
+        (author_bios, translator_bio)
+          · author_bios    : {저자명: bio_text} — 저자별 Bio 매핑 dict
+          · translator_bio : 역자 Bio 문자열 (기존과 동일)
 
         수집 파이프라인 (저자·역자 각각 독립 실행)
         ──────────────────────────────────────────
@@ -1403,6 +1420,14 @@ class AladinAuthorScraper:
                 n = (auth.get("authorName") or "").strip()
                 if n:
                     writer_names.append(n)
+        # 저자 없으면 기획자를 폴백으로 수집
+        if not writer_names:
+            for auth in authors_list:
+                role = (auth.get("authorTypeDesc") or auth.get("authorTypeName") or "").strip()
+                if _role_is_planner(role):
+                    n = (auth.get("authorName") or "").strip()
+                    if n:
+                        writer_names.append(n)
         if not writer_names:
             writer_names = _parse_names_from_raw_author(
                 item.get("author") or "", want_translator=False
@@ -1421,16 +1446,35 @@ class AladinAuthorScraper:
                 item.get("author") or "", want_translator=True
             )
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            future_author = executor.submit(
-                self._fetch_single_bio, item, writer_names,     False
-            )
+        # 저자별 Bio를 각각 독립 수집 (최대 4명, 병렬)
+        def _fetch_one_author(name: str) -> tuple[str, str]:
+            """단일 저자 Bio 수집 — (이름, bio) 반환."""
+            bio = self._fetch_single_bio(item, [name], False)
+            return name, bio
+
+        author_bios: dict[str, str] = {}
+        target_names = writer_names[:4]
+        if not target_names:
+            pass  # 저자 없음 → author_bios 빈 dict 유지
+        elif len(target_names) == 1:
+            # 저자 1명: 기존 방식과 동일
+            bio = self._fetch_single_bio(item, target_names, False)
+            author_bios = {target_names[0]: bio}
+        else:
+            # 저자 2~4명: 병렬 수집
+            with ThreadPoolExecutor(max_workers=min(len(target_names), 4)) as ex:
+                futures = {ex.submit(_fetch_one_author, n): n for n in target_names}
+                for fut in as_completed(futures):
+                    name, bio = fut.result()
+                    author_bios[name] = bio
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
             future_trans  = executor.submit(
                 self._fetch_single_bio, item, translator_names, True
             )
-            author_bio     = future_author.result()
             translator_bio = future_trans.result()
-        return author_bio, translator_bio
+
+        return author_bios, translator_bio
 
     def _fetch_single_bio(
         self,
@@ -1445,7 +1489,7 @@ class AladinAuthorScraper:
         Step 2  API authorId 있음 → wauthor_overview 크롤링
         Step 3  API authorId 없음 → wproduct HTML 이름 매칭 → wauthor_overview 크롤링
         """
-        for name in names[:2]:
+        for name in names[:4]:   # 공동저자·공편자 최대 4명까지 시도
             # Step 1 — API 소개글 (네트워크 요청 없음)
             api_bio = _collect_bio_from_api(item, name)
             if api_bio.strip() and len(api_bio.strip()) > 5:
