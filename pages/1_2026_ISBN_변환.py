@@ -256,10 +256,18 @@ with tab_single:
                 if final_kdc != kdc_candidates[0]["kdc"]:
                     final_mrk = _replace_056(edited_mrk, final_kdc)
 
+                # 모델 버전은 설정에 적어둔 표시용 문자열이라 실제로 무엇이 돌았는지를
+                # 보증하지 못한다. 입력 스키마와 실제로 쓰인 필드를 함께 보여줘야
+                # "정말 model21로 바뀌었는지"를 화면에서 확인할 수 있다.
+                _schema = meta.get("kdc_input_schema", "")
+                _fields = meta.get("kdc_input_fields") or []
+                _label = {"v21": "v21 (653 미사용)", "v8": "v8 (653 사용)"}.get(_schema, _schema or "?")
                 st.caption(
                     f"모델은 강(2자리)까지만 예측합니다 · 모델 버전 "
-                    f"`{meta.get('kdc_model_version', '')}`"
+                    f"`{meta.get('kdc_model_version', '')}` · 입력 스키마 **{_label}**"
                 )
+                if _fields:
+                    st.caption("모델에 실제로 들어간 입력: " + " · ".join(_fields))
             elif meta.get("kdc_reason"):
                 st.caption(f"056 미생성: {meta['kdc_reason']}")
 

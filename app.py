@@ -521,6 +521,13 @@ def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
             # 평가 시트의 "입력 결손"(653/목차/책소개 유무) 열이 쓰는 값.
             "kdc_input_presence": diag_056.get("input_presence", {}),
             "kdc_model_version": settings.kdc_model_version,
+            # 입력 스키마와 실제 사용된 필드. 모델 버전 문자열은 우리가 붙인 표시용이라
+            # 실제로 무엇이 돌았는지를 보증하지 못한다. 653을 입력에 넣었는지 여부는
+            # 스키마가 결정하므로, 이 값이 model21 전환의 실질적 확인 근거가 된다.
+            "kdc_input_schema": diag_056.get("input_schema", ""),
+            "kdc_input_fields": [
+                k for k, v in (diag_056.get("input_presence") or {}).items() if v
+            ],
             "category_id":   (item or {}).get("categoryId", ""),
             "category_name": (item or {}).get("categoryName", ""),
             "toc_text": illus_diag.get("toc_text", ""),
