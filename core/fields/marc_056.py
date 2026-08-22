@@ -32,14 +32,46 @@ import re
 from core import kdc_model
 from core.debug_log import dbg
 
-# 구분자와 필드 순서는 model8~12에서 바뀌지 않았다.
+# 구분자와 필드 순서는 model8~21에서 바뀌지 않았다.
 FIELD_SEPARATOR = " [SEP] "
 
-# 토큰 예산은 모델 라운드마다 달라 설정에서 읽는다(기본값은 model8 기준).
-#   model8   (prepare_data_v8.py)          : 60 / 150 / 100, MAX_LEN 384
-#   model11+ (prepare_data_v11_longctx.py) : 60 / 200 / 140, MAX_LEN 512
-# 학습 스크립트의 값과 어긋나면 정확도가 조용히 떨어진다(model8 실측 88.0% → 83.0%).
-_DEFAULT_BUDGETS = {"keyword": 60, "toc": 150, "desc": 100}
+# ── 입력 스키마 ────────────────────────────────────────────────
+# 모델 라운드에 따라 입력문에 들어가는 필드 세트가 다르다. 학습 스크립트와 한 글자라도
+# 어긋나면 정확도가 조용히 떨어지므로(model8 실측 88.0% → 83.0%) 스키마를 명시적으로 나눈다.
+#
+#   v8   (prepare_data_v8.py / model8~12)
+#        본표제 [SEP] 카테고리 [SEP] 653키워드 [SEP] 목차 [SEP] 책소개
+#
+#   v21  (prepare_data_v21_no653_richfields.py / model21)
+#        본표제 [SEP] 카테고리 [SEP] 부제 [SEP] 발행자 [SEP] 부가기호
+#        [SEP] 목차 [SEP] 책소개 [SEP] KPIPA목차 [SEP] KPIPA저자소개
+#        — 653을 완전히 배제한다(653은 사서 수작업 필드라 "완전 자동" 기준에 맞지 않음).
+SCHEMA_V8 = "v8"
+SCHEMA_V21 = "v21"
+
+_DEFAULT_BUDGETS = {
+    "keyword": 60,        # v8 전용
+    "toc": 150,           # v8 기본값. model11+ 및 v21은 200
+    "desc": 100,          # v8 기본값. model11+ 및 v21은 140
+    # v21 신설 — prepare_data_v21의 상수와 동일해야 한다
+    "subtitle": 30,
+    "publisher": 15,
+    "addcode": 10,
+    "kpipa_toc": 100,
+    "kpipa_author": 100,
+}
+
+
+def input_schema() -> str:
+    """
+    입력 스키마 결정. KDC_INPUT_SCHEMA로 명시할 수 있고, 없으면 모델 버전명으로 추론한다.
+    운영 중 모델만 바꾸고 스키마를 안 바꾸는 실수를 막기 위해 추론을 기본으로 둔다.
+    """
+    explicit = (os.environ.get("KDC_INPUT_SCHEMA") or "").strip().lower()
+    if explicit in (SCHEMA_V8, SCHEMA_V21):
+        return explicit
+    version = (os.environ.get("KDC_MODEL_VERSION") or "").lower()
+    return SCHEMA_V21 if "model21" in version else SCHEMA_V8
 
 
 def _budget(name: str) -> int:
@@ -114,6 +146,77 @@ def build_model_input(
     return FIELD_SEPARATOR.join(parts)
 
 
+def build_model_input_v21(
+    *,
+    title: str = "",
+    category: str = "",
+    subtitle: str = "",
+    publisher: str = "",
+    addcode: str = "",
+    toc: str = "",
+    description: str = "",
+    kpipa_toc: str = "",
+    kpipa_author: str = "",
+) -> str:
+    """
+    model21 입력문을 조립한다 — prepare_data_v21_no653_richfields.build_text()와 동일해야 한다.
+
+    학습 스크립트에서 그대로 옮겨온, 직관에 어긋나 보이지만 반드시 지켜야 하는 두 가지:
+
+    1. **KPIPA 목차가 두 번 들어갈 수 있다.** 알라딘 목차가 비면 KPIPA 목차가 대체값으로
+       목차 자리에 들어가고, 그와 별개로 KPIPA 목차 슬롯에도 한 번 더 붙는다. 중복처럼
+       보여도 학습이 그렇게 됐으므로 한 번만 넣으면 안 된다.
+       (다만 학습데이터 10만 건에서는 이 대체가 실제로 한 번도 발생하지 않았다 —
+        KPIPA 목차가 있는 12.1%는 전부 알라딘 목차도 있는 자료였다.)
+
+    2. **본표제·카테고리는 순서가 고정**이다. 학습 시 --protect-category-field가 두 번째
+       세그먼트를 위치로 카테고리라 보고 field-dropout에서 보호하므로, 순서를 바꾸면
+       model12에서 고쳤던 학습-추론 불일치가 재발한다.
+
+    653은 받지 않는다. model21은 653을 완전히 배제한 트랙이다.
+    """
+    parts: list[str] = []
+
+    for value in (_clean(title), _clean(category)):
+        if value:
+            parts.append(value)  # 예산 없음
+
+    for value, budget_name in (
+        (_clean(subtitle), "subtitle"),
+        (_clean(publisher), "publisher"),
+        (_clean(addcode), "addcode"),
+    ):
+        if value:
+            cut = kdc_model.truncate_by_tokens(value, _budget(budget_name))
+            if cut:
+                parts.append(cut)
+
+    # 목차 — 알라딘 우선, 없으면 KPIPA로 대체
+    toc_value = _clean(toc) or _clean(kpipa_toc)
+    if toc_value:
+        cut = kdc_model.truncate_by_tokens(toc_value, _budget("toc"))
+        if cut:
+            parts.append(cut)
+
+    desc_value = _clean(description)
+    if desc_value:
+        cut = kdc_model.truncate_by_tokens(desc_value, _budget("desc"))
+        if cut:
+            parts.append(cut)
+
+    # KPIPA 목차 — 위 대체와 무관하게 별도 슬롯으로 한 번 더
+    for value, budget_name in (
+        (_clean(kpipa_toc), "kpipa_toc"),
+        (_clean(kpipa_author), "kpipa_author"),
+    ):
+        if value:
+            cut = kdc_model.truncate_by_tokens(value, _budget(budget_name))
+            if cut:
+                parts.append(cut)
+
+    return FIELD_SEPARATOR.join(parts)
+
+
 def _keywords_from_653(tag_653: str | None) -> str:
     """
     앱이 방금 생성한 653 태그에서 키워드만 뽑아 학습데이터의 '653키워드' 열 형식
@@ -131,47 +234,62 @@ def build_056_field(
     tag_653: str | None = None,
     toc_text: str = "",
     kpipa_toc: str = "",
+    subtitle: str = "",
+    publisher: str = "",
+    addcode: str = "",
+    kpipa_author: str = "",
     top_k: int = 3,
 ) -> tuple[str | None, dict]:
     """
     056 MRK 문자열과 진단 정보를 반환한다.
 
     Args:
-        item:      알라딘 API 결과 (title/categoryName/description)
-        tag_653:   같은 변환에서 먼저 생성된 653 태그 — 키워드를 입력에 포함시킨다
-        toc_text:  알라딘 목차(300 처리 과정에서 이미 확보한 값을 재사용)
-        kpipa_toc: 알라딘 목차가 비었을 때 쓰는 대체 목차
-                   (prepare_data_v8.build_text의 KPIPA_목차 폴백과 같은 규칙)
-        top_k:     반환할 후보 개수
+        item:         알라딘 API 결과 (title/categoryName/description)
+        tag_653:      먼저 생성된 653 태그 — v8 스키마에서만 쓴다(model21은 653 미사용)
+        toc_text:     알라딘 목차(300 처리 과정에서 이미 확보한 값을 재사용)
+        kpipa_toc:    KPIPA ONIX 목차
+        subtitle:     부제 — v21 전용 (245 $b에 대응)
+        publisher:    발행자 — v21 전용 (260 $b에 대응)
+        addcode:      부가기호 — v21 전용 (020 $g에 대응)
+        kpipa_author: KPIPA 저자소개 — v21 전용
+        top_k:        반환할 후보 개수
 
     Returns:
         (mrk_str_or_None, diag)
-        diag = {
-            "candidates": [{"kdc": "33", "prob": 0.71}, ...],
-            "low_confidence": bool,
-            "input_chars": int,
-            "reason": str,        # 생성 못 한 경우의 사유
-        }
     """
-    # input_presence: 모델 입력 5개 필드가 각각 실제로 채워졌는지. 평가 시트의
-    # "입력 결손" 열(653/목차/책소개 유무)이 이 값을 그대로 쓴다 — 틀린 예측이
-    # 모델 탓인지 입력이 비어서인지를 사후에 가르기 위한 것이라, 모델 가용 여부와
-    # 무관하게 항상 채워야 한다(모델이 꺼져 있어도 입력 결손은 기록되어야 한다).
+    schema = input_schema()
+
+    # input_presence: 모델 입력 필드가 각각 실제로 채워졌는지. 평가 시트의 "입력 결손"
+    # 열이 이 값을 그대로 쓴다 — 틀린 예측이 모델 탓인지 입력이 비어서인지를 사후에
+    # 가르기 위한 것이라, 모델 가용 여부와 무관하게 항상 채워야 한다.
     _keywords = _keywords_from_653(tag_653)
-    _toc = toc_text or kpipa_toc
     _desc = (item or {}).get("description", "")
+    presence = {
+        "title": bool(_clean((item or {}).get("title", ""))),
+        "category": bool(_clean((item or {}).get("categoryName", ""))),
+        "toc": bool(_clean(toc_text) or _clean(kpipa_toc)),
+        "description": bool(_clean(_desc)),
+    }
+    if schema == SCHEMA_V21:
+        presence.update({
+            "subtitle": bool(_clean(subtitle)),
+            "publisher": bool(_clean(publisher)),
+            "addcode": bool(_clean(addcode)),
+            "kpipa_toc": bool(_clean(kpipa_toc)),
+            "kpipa_author": bool(_clean(kpipa_author)),
+            # model21은 653을 입력에 쓰지 않는다. 평가 시트의 653 열이 "결손"으로
+            # 오해되지 않도록 None이 아니라 명시적으로 False를 넣지 않고 키 자체를 뺀다.
+        })
+    else:
+        presence["keywords"] = bool(_clean(_keywords))
+
     diag: dict = {
         "candidates": [],
         "low_confidence": False,
         "input_chars": 0,
         "reason": "",
-        "input_presence": {
-            "title": bool(_clean((item or {}).get("title", ""))),
-            "category": bool(_clean((item or {}).get("categoryName", ""))),
-            "keywords": bool(_clean(_keywords)),
-            "toc": bool(_clean(_toc)),
-            "description": bool(_clean(_desc)),
-        },
+        "input_schema": schema,
+        "input_presence": presence,
     }
 
     available, why = kdc_model.availability()
@@ -180,13 +298,26 @@ def build_056_field(
         dbg("[056] 건너뜀 —", why)
         return None, diag
 
-    text = build_model_input(
-        title=(item or {}).get("title", ""),
-        category=(item or {}).get("categoryName", ""),
-        keywords=_keywords,
-        toc=_toc,
-        description=_desc,
-    )
+    if schema == SCHEMA_V21:
+        text = build_model_input_v21(
+            title=(item or {}).get("title", ""),
+            category=(item or {}).get("categoryName", ""),
+            subtitle=subtitle,
+            publisher=publisher,
+            addcode=addcode,
+            toc=toc_text,
+            description=_desc,
+            kpipa_toc=kpipa_toc,
+            kpipa_author=kpipa_author,
+        )
+    else:
+        text = build_model_input(
+            title=(item or {}).get("title", ""),
+            category=(item or {}).get("categoryName", ""),
+            keywords=_keywords,
+            toc=toc_text or kpipa_toc,
+            description=_desc,
+        )
     diag["input_chars"] = len(text)
     if not text:
         diag["reason"] = "모델 입력으로 쓸 서지정보가 없습니다."

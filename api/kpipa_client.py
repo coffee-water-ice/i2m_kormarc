@@ -177,3 +177,57 @@ def extract_kpipa_toc_only(raw: dict[str, Any]) -> str:
     if fallback:
         return max(fallback, key=len)
     return ""
+
+
+def _extract_text_by_type(raw: dict[str, Any], text_type: str) -> str:
+    """
+    CollateralDetail.TextContent에서 지정한 TextType의 본문을 뽑는다.
+
+    extract_kpipa_toc_only(TextType=04, 목차)과 동일한 규칙을 TextType만 바꿔 쓴다 —
+    ContentAudience "02"(일반 공개)를 우선하고, 없으면 나머지 중 가장 긴 것을 쓴다.
+    같은 TextType이 여러 번 나올 때 어느 것이 본문인지 알 수 없어 길이로 고르는 것이며,
+    목차 추출에서 이미 검증된 방식이다.
+    """
+    product = _extract_kpipa_book_payload(raw)
+    if not product:
+        return ""
+    cd = product.get("CollateralDetail")
+    if not isinstance(cd, dict):
+        return ""
+    blocks = cd.get("TextContent")
+    if not isinstance(blocks, list):
+        return ""
+    plain: list[str] = []
+    fallback: list[str] = []
+    for b in blocks:
+        if not isinstance(b, dict) or str(b.get("TextType")) != text_type:
+            continue
+        aud = b.get("ContentAudience")
+        aud0 = str(aud[0]) if isinstance(aud, list) and aud else ""
+        texts = b.get("Text")
+        if isinstance(texts, str):
+            text_list = [texts]
+        elif isinstance(texts, list):
+            text_list = texts
+        else:
+            text_list = []
+        merged = "\n".join(t.strip() for t in text_list if isinstance(t, str) and t.strip())
+        if not merged:
+            continue
+        cleaned = _strip_html_simple(merged)
+        (plain if aud0 == "02" else fallback).append(cleaned)
+    if plain:
+        return max(plain, key=len)
+    if fallback:
+        return max(fallback, key=len)
+    return ""
+
+
+def extract_kpipa_author_intro(raw: dict[str, Any]) -> str:
+    """
+    KPIPA ONIX Product에서 저자소개(TextType=13)를 추출한다.
+
+    056 model21의 입력 필드 중 하나다. 학습데이터 기준 커버리지가 0.1%(10만 건 중 78건)로
+    극히 낮아 대부분 빈 문자열이 반환되지만, 학습 입력과 형태를 맞추기 위해 자리는 둔다.
+    """
+    return _extract_text_by_type(raw, "13")

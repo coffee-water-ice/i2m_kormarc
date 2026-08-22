@@ -34,6 +34,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import re
 import subprocess
 import time
 from contextlib import asynccontextmanager
@@ -59,7 +60,11 @@ from core.fields.marc_300 import build_300_field
 from core.fields.marc_245 import build_245_family
 from core.fields.marc_500_700_710 import build_500_700_710_900
 from api.aladin_client import get_aladin_item_by_isbn
-from api.kpipa_client import get_kpipa_book_detail, extract_kpipa_toc_only
+from api.kpipa_client import (
+    extract_kpipa_author_intro,
+    extract_kpipa_toc_only,
+    get_kpipa_book_detail,
+)
 from api.publisher_db import build_pub_location_bundle
 from database.feedback_logger import init_db, save_feedback_record
 
@@ -268,25 +273,54 @@ def _build_openai_client(settings: Settings) -> openai.OpenAI | None:
     return openai.OpenAI(api_key=settings.openai_api_key, timeout=60.0)
 
 
-def _kpipa_toc_for_056(isbn: str, secrets: dict, settings: Settings) -> str:
-    """
-    알라딘 목차가 비었을 때 056 모델 입력에 쓸 KPIPA 목차.
+_SUBFIELD_RE_CACHE: dict[str, re.Pattern] = {}
 
-    학습 전처리(prepare_data_v8.build_text)가 알라딘_목차 결측 행에 한해 KPIPA_목차로
-    대체했으므로 추론에서도 같은 규칙을 따른다. 다만 KPIPA 호출은 653과 마찬가지로
-    opt-in(kpipa_enable_653)이며, 키가 없거나 조회에 실패하면 빈 문자열을 돌려주고
-    056은 목차 없이 진행한다.
+
+def _subfield_value(mrk_tag: str, code: str) -> str:
     """
-    if not (settings.kpipa_enable_653 and secrets.get("KPIPA_API_KEY")):
+    MRK 문자열("245 00 $a본표제 :$b부제")에서 서브필드 하나의 값을 꺼낸다.
+
+    056 model21은 부제·발행자·부가기호를 입력으로 쓰는데, 학습데이터에서는 정독
+    MARC의 별도 열이었다. 우리는 그 카탈로그가 없으므로 방금 생성한 태그에서 되꺼낸다.
+    끝에 붙는 MARC 구두점(" :", " /", ",", ";")은 학습데이터의 해당 열에는 없으므로 떼어낸다.
+    """
+    if not mrk_tag or not code:
         return ""
+    pattern = _SUBFIELD_RE_CACHE.get(code)
+    if pattern is None:
+        pattern = re.compile(rf"\${code}([^$]*)")
+        _SUBFIELD_RE_CACHE[code] = pattern
+    m = pattern.search(mrk_tag)
+    if not m:
+        return ""
+    return m.group(1).strip().rstrip(":/,;=").strip()
+
+
+def _kpipa_payload_for_056(isbn: str, secrets: dict, settings: Settings) -> dict:
+    """
+    056 모델 입력에 쓸 KPIPA 목차·저자소개. 한 번의 조회로 둘 다 뽑는다.
+
+    v8 스키마(model8~12)에서는 알라딘 목차가 비었을 때의 대체용으로만 썼지만,
+    v21(model21)은 KPIPA 목차를 별도 슬롯으로도 넣으므로 매 건 필요하다.
+
+    KPIPA 호출은 653과 마찬가지로 opt-in(kpipa_enable_653)이다. 키가 없거나 조회에
+    실패하면 빈 값을 돌려주고 056은 해당 필드 없이 진행한다 — 학습 때도 결측 행이
+    많았고(목차 12.1%, 저자소개 0.1%) field-dropout으로 내성이 학습되어 있다.
+    """
+    empty = {"toc": "", "author": ""}
+    if not (settings.kpipa_enable_653 and secrets.get("KPIPA_API_KEY")):
+        return empty
     try:
         raw, err = get_kpipa_book_detail(isbn, secrets["KPIPA_API_KEY"])
         if err or not raw:
-            return ""
-        return extract_kpipa_toc_only(raw) or ""
+            return empty
+        return {
+            "toc": extract_kpipa_toc_only(raw) or "",
+            "author": extract_kpipa_author_intro(raw) or "",
+        }
     except Exception as e:
-        dbg_err("[056] KPIPA 목차 조회 실패:", e)
-        return ""
+        dbg_err("[056] KPIPA 조회 실패:", e)
+        return empty
 
 
 def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
@@ -418,15 +452,23 @@ def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
         )
         _add(tag_653)  # 실패 사유는 build_653_field 내부에서 이미 [653] 디버그 로그로 남긴다
 
-        # ── 056 (KDC 분류기호, 딥러닝 model8) ────────────────
-        # 653 키워드가 모델 입력에 포함되므로 반드시 653 이후에 실행한다
-        # (「056 분류모델 개선 및 I2M 연계 추진안」 3절). 목차는 300 처리에서 이미
-        # 확보한 값을 재사용해 알라딘 재크롤링을 피한다.
+        # ── 056 (KDC 분류기호, 딥러닝 모델) ──────────────────
+        # 653 키워드는 v8 스키마(model8~12)에서만 모델 입력에 들어간다. 그 경우
+        # 반드시 653 이후에 실행해야 하므로 위치는 그대로 둔다 — model21(v21)로
+        # 바꾸면 653을 쓰지 않지만, 순서를 지켜도 손해가 없다.
+        # 목차는 300 처리에서 이미 확보한 값을 재사용해 알라딘 재크롤링을 피한다.
+        _kpipa_raw = _kpipa_payload_for_056(isbn, secrets, settings)
         tag_056, diag_056 = build_056_field(
             item,
             tag_653=tag_653,
             toc_text=illus_diag.get("toc_text", ""),
-            kpipa_toc=_kpipa_toc_for_056(isbn, secrets, settings),
+            kpipa_toc=_kpipa_raw["toc"],
+            kpipa_author=_kpipa_raw["author"],
+            # v21 신설 필드 — 학습데이터에서는 정독 MARC의 부제/발행자/부가기호였다.
+            # 우리는 그 카탈로그가 없으므로 방금 생성한 245 $b / 260 $b / 020 $g를 쓴다.
+            subtitle=_subfield_value(f245_ctx.get("field_245", ""), "b"),
+            publisher=_subfield_value(tag_260, "b"),
+            addcode=_subfield_value(tags_020[0] if tags_020 else "", "g"),
         )
         if tag_056:
             # MARC 태그 순서를 지키기 위해 append가 아니라 056보다 큰 첫 태그 앞에 끼운다.

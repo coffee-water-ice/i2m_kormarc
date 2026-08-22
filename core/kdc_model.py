@@ -160,9 +160,20 @@ def truncate_by_tokens(text: str, budget: int) -> str:
     """
     문자가 아니라 토큰 개수 기준으로 자른다.
 
-    학습 전처리(prepare_data_v8.truncate_by_tokens)와 동일한 방식이어야 하므로
+    학습 전처리(prepare_data_v*.truncate_by_tokens)와 동일한 방식이어야 하므로
     같은 토크나이저로 encode → 자르기 → decode 한다. 모델을 못 쓰는 상황이면
     원문을 그대로 돌려준다(이 경우 어차피 추론도 건너뛴다).
+
+    clean_up_tokenization_spaces=False를 명시하는 이유 — 이 값이 학습과 추론에서
+    서로 달랐다. 학습 스크립트는 허브의 klue/roberta-large 토크나이저를 쓰는데 그쪽
+    기본값은 False인 반면, 파인튜닝 후 저장된 모델 폴더의 tokenizer_config.json에는
+    True로 기록되어 있다. 그 결과 같은 문장이 이렇게 갈렸다:
+
+        학습(False) : "' 세대 프레임 ' 을 넘어서"
+        추론(True)  : "' 세대 프레임'을 넘어서"
+
+    구두점 주변 공백이 통째로 달라져 model21 입력문 297건 중 88건(29.6%)이 어긋났다.
+    학습 쪽에 맞춰 False로 고정한다.
     """
     if not (text or "").strip() or budget <= 0:
         return ""
@@ -170,7 +181,7 @@ def truncate_by_tokens(text: str, budget: int) -> str:
         return text
     tok = _STATE["tok"]
     ids = tok(text, add_special_tokens=False, truncation=True, max_length=budget)["input_ids"]
-    return tok.decode(ids, skip_special_tokens=True)
+    return tok.decode(ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)
 
 
 def predict_topk(text: str, k: int = 3) -> list[tuple[str, float]]:
