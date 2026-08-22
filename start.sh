@@ -2,6 +2,12 @@
 # HF Space 컨테이너 기동 스크립트 — 백엔드와 프론트를 한 컨테이너에서 함께 띄운다.
 set -euo pipefail
 
+# 2025년 원본 코드가 st.secrets로 읽는 키들을 secrets.toml로 만들어 둔다.
+# secrets.toml이 없으면 st.secrets 접근 순간 StreamlitSecretNotFoundError가 나면서
+# 「2025 I2M」 페이지와 「평가시스템」의 '기존 I2M' 실행이 통째로 실패한다.
+# 원본 코드는 고치지 않는다는 원칙이라 환경 쪽을 맞춰준다.
+python deploy_write_secrets.py
+
 # 백엔드는 컨테이너 내부에서만 쓰므로 127.0.0.1에만 바인딩한다.
 uvicorn app:app --host 127.0.0.1 --port 8000 &
 BACKEND_PID=$!
