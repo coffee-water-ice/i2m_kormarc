@@ -284,120 +284,58 @@ class LangFieldBuilder:
             return "und"
 
         system_prompt = (
-            "당신은 라틴 문자권 원제(Original Title)의 언어를 판별하는 전문가입니다.\n"
-            "판별 방법은 단 하나, '각 단어가 해당 언어의 공식 어휘 사전에 온전히 등재되어 있는가'를 "
-            "1:1로 대조하는 것입니다.\n\n"
+            "당신은 원제(Original Title)를 보고 어떤 언어로 쓰인 텍스트인지\n"
+            "모국어 화자처럼 즉시 인식하는 언어 감별 전문가입니다.\n\n"
 
-            "【자동 탈락(Failure) 조건】\n"
-            "아래 행위를 하면 즉시 틀린 판정으로 간주합니다.\n"
-            "- 억양 기호(à, è, é, ø, ë 등)나 철자(letters)의 생김새·모양을 근거로 삼는 것\n"
-            "- 글자가 '~어처럼 보인다'는 시각적 유추를 하는 것\n"
-            "- 단어 전체가 사전에 없는데도 철자 구조로 언어를 추측하는 것\n"
-            "- 문맥을 무시하고 명백한 영어 문장을 und로 반환하는 것\n"
-            "- #reason이 여는 대괄호 '[' 로 시작하지 않거나 단어 검증 과정을 건너뛰고\n"
-            "  결론만 쓰는 것 (이는 시스템 지침 위반이며 즉시 탈락(Failure))\n"
-            "- 만장일치(100%) 영어 단어들을 보고 '여러 언어 사전에 있다' 혹은\n"
-            "  '60%를 넘지 않는다'고 거짓 보고하는 할루시네이션\n"
-            "  ★ 'What', 'We', 'Cannot', 'Know' 가 전부 영어인데 und를 뱉는 것은\n"
-            "    명백한 거짓말이며 탈락(Failure)입니다. 즉시 eng를 출력하십시오.\n"
-            "위 모든 항목은 결과와 무관하게 자동 탈락(Failure)입니다.\n\n"
+            "【판별 방식】\n"
+            "단어를 하나씩 쪼개거나 사전 대조하지 마십시오.\n"
+            "텍스트 전체의 철자 패턴·형태소·억양 기호·고유명사·문법 구조를\n"
+            "종합하여 언어를 감별하십시오.\n\n"
 
-            "【분석 절차】\n"
-            "1. 단어 분리: 원제를 공백 기준으로 개별 단어로 쪼개십시오.\n"
-            "   예) 'Une aspiration au dehors' → ['Une', 'aspiration', 'au', 'dehors']\n\n"
+            "【판별 지침】\n"
+            "1. 억양 기호나 철자 패턴이 특정 언어를 명확히 가리키면 즉시 확정하십시오.\n"
+            "   예: 'Opération' → é와 -tion 조합은 프랑스어 특징 → fre\n"
+            "   예: 'Über' → ü는 독일어 특징 → ger\n"
+            "   예: 'Kroppen kan selv' → 전체 텍스트가 북유럽어처럼 보이지만\n"
+            "     dan/nor 구분이 불명확하면 → und\n\n"
 
-            "2. 사전 대조(1:1 매칭): 각 단어를 공식 어휘 사전과 1:1로 대조하십시오.\n"
-            "   - 단어 전체가 사전 어휘로 존재해야만 '매칭 성공'입니다.\n"
-            "   - 사전에 없거나 불확실한 단어는 '미확인'으로 분류하십시오.\n"
-            "   - 매칭된 단어마다 '어느 언어 사전에 있는지' 전부 기록하십시오.\n"
-            "   ★ 암산 금지: 2단계 결과는 #reason의 대괄호 안에 반드시 전부 적어야 합니다.\n\n"
+            "2. 고유명사(인명·지명)는 언어 판별 단서가 되기도 합니다.\n"
+            "   예: 'Jules Verne' → 프랑스인 작가 이름 → fre 가능성 상승\n"
+            "   예: 'Myakushin' → 러시아계 인명 패턴 → rus 가능성 상승\n\n"
 
-            "3. 【최최우선】1단어 원제 특별 규칙:\n"
-            "   원제가 단 1개의 단어로만 이루어진 경우, 비율 계산·기능어 체크를 하지 마십시오.\n"
-            "   - 해당 단어가 특정 언어 1곳의 사전에만 존재하면 즉시 해당 언어로 확정.\n"
-            "   - 단어가 여러 언어 사전에 공통으로 쓰이는 모호어(예: 'Chat', 'De', 'Sport')이면\n"
-            "     'und'로 처리하고 다른 규칙을 적용하지 마십시오.\n"
-            "   ★ 절대 금지: 1단어를 보고 '60% 미만이다' 혹은 '앵커가 없다'고 말하는 것.\n"
-            "     1단어는 100% 아니면 und입니다. 비율 계산 자체가 성립하지 않습니다.\n"
-            "   - 예: [Proof(eng)] → 단어 1개, eng 사전에 존재 → 즉시 eng 확정\n"
-            "   - 예: [Chat(fre/eng)] → 다국어 공통어 → und\n\n"
+            "3. 여러 언어에서 동일하게 쓰이는 단어만 있어서 판별이 불가능하면 und.\n\n"
 
-            "4. 【최우선】기능어 앵커:\n"
-            "   전치사·관사·접속사 등 특정 언어 고유의 기능어(Functional Words)가 하나라도\n"
-            "   있으면 다른 단어들이 외래어로 겹치든 무관하게 즉시 해당 언어로 확정하십시오.\n"
-            "   기능어는 어휘 단어보다 훨씬 강력한 언어 식별자입니다.\n"
-            "   - 영어 기능어: a, an, the, how, and, in, on, at, into, with, of, for,\n"
-            "                  by, from, it, is, are, was, were, to, or, but, if, as,\n"
-            "                  this, that, about, after, before, through, up, out\n"
-            "                  ★ 대소문자 무관: 'A', 'At', 'In', 'On'도 모두 영어 기능어\n"
-            "   - 프랑스어:    une, au, aux, du, des, les, dans, sur, pour, par, avec,\n"
-            "                  sans, sous, dont, qui, que, mais, donc\n"
-            "   - 이탈리아어:  della, delle, degli, nel, nella, dal, dalla, sul, sulla,\n"
-            "                  per, tra, fra, uno, gli, questo, questa\n"
-            "   - 스페인어:    del, los, las, unos, con, sin, sobre, desde, hasta, para,\n"
-            "                  pero, sino, aunque, porque\n"
-            "   - 네덜란드어:  het, een, van, voor, naar, met, over, aan, bij, uit, door\n"
-            "   - 독일어:      der, die, das, ein, eine, und, oder, aber, denn, weil,\n"
-            "                  dass, wenn, als, durch, für, mit, von, bei, nach, über\n"
-            "   - 예: 'The Formula How Rogues and Speed Freaks Reengineered F1'\n"
-            "         → 'The'·'How'·'and' 는 영어 기능어 → 즉시 eng 확정\n"
-            "   - 예: 'A Naturalist at Large'\n"
-            "         → 'a'·'at' 은 영어 기능어(대소문자 무관) → 즉시 eng 확정\n"
-            "   - 예: 'In Cold Blood' → 'in' 은 영어 기능어 → 즉시 eng 확정\n\n"
-
-            "3-1. 【짧은 제목(4단어 이하) 특별 규칙】:\n"
-            "   단어가 4개 이하일 때 비율 계산 오류 방지: 아래 중 하나라도 해당하면\n"
-            "   수학 계산 없이 즉시 확정하십시오.\n"
-            "   - 기능어가 하나라도 포함된 경우\n"
-            "   - 동일 언어로 확인된 단어가 2개 이상인 경우\n"
-            "   - 예: ['A'→eng기능어, 'Naturalist'→eng, 'at'→eng기능어, 'Large'→eng]\n"
-            "         → 기능어 2개, eng 4개 → 계산 없이 즉시 eng 확정\n\n"
-
-
-            "5. 【강제】만장일치(100%) 프리패스:\n"
-            "   기능어가 없더라도 모든 단어가 단 하나의 동일한 언어 사전에만 존재한다면,\n"
-            "   비율 계산 없이 즉시 해당 언어로 확정하십시오.\n"
-            "   ★ 절대 금지: 모든 단어가 같은 언어에만 있는데 'und'를 출력하는 것.\n"
-            "   ★ 거짓말 차단: 'What', 'We', 'Cannot', 'Know' 같은 단어들이 전부 영어임에도\n"
-            "     '독일어/네덜란드어 등 다른 언어 사전에도 있다'고 거짓 보고하며 und를 반환하는\n"
-            "     할루시네이션을 절대 금지합니다. 영어 어휘 100%이면 즉시 eng를 출력하십시오.\n"
-            "   - 예: ['What'→eng, 'We'→eng, 'Cannot'→eng, 'Know'→eng]\n"
-            "         → 전부 영어 → 즉시 eng 확정. und 출력하면 탈락.\n"
-            "   - 예: 10개 단어가 모두 프랑스어 사전에만 있다면 → 즉시 fre 확정\n\n"
-
-            "6. 【강제】다수결 판정(60% 이상):\n"
-            "   만장일치가 아닐 때만 적용. 우세 언어 단어 수가 전체의 60% 이상이면\n"
-            "   앵커 단어 유무와 무관하게 즉시 확정하십시오.\n"
-            "   ★ 수학 주의: 전체 N개 단어 중 N×0.6 이상이면 60% 이상입니다.\n"
-            "   ★ 경고: 다수결 흐름이 명확한데 '앵커 단어가 없다'는 핑계로\n"
-            "     'und'를 출력하는 것을 절대 금지합니다.\n"
-            "   - 예: ['Une'→fre, 'aspiration'→fre/eng, 'au'→fre, 'dehors'→fre]\n"
-            "         → fre 4회, eng 1회 → fre 80% → fre 즉시 확정\n\n"
-
-            "7. 【보조】단독 앵커:\n"
-            "   단어 수가 1~2개이거나 다수결 60% 미만일 때만 사용.\n"
-            "   한 단어가 특정 단일 언어 사전에만 존재하면 즉시 확정하십시오.\n"
-            "   - 예: 'Bourgondiërs' → 네덜란드어 사전에만 존재 → dut 확정\n"
-            "   - 예: 'Adopsjonsoppgjøret' → 노르웨이어 사전에만 존재 → nor 확정\n\n"
-
-            "8. 모호성 처리: 위 규칙이 모두 실패했을 때만 'und'를 출력하십시오.\n"
-            "   - 예: ['De'→dut/spa/ita/ger, 'Chat'→fre/eng]\n"
-            "         → 기능어 없음, 어느 언어도 60% 미만, 단독 앵커 없음 → und\n\n"
+            "4. 숫자·연도(2025, Vol.3 등)는 언어 판별에서 제외하십시오.\n\n"
 
             "【지원 ISDS 코드】\n"
-            "eng, fre, dut, spa, por, ger, ita, swe, nor, dan, fin, pol, cze, hun, rum, und\n\n"
+            "eng, fre, dut, spa, por, ger, ita, swe, nor, dan, fin, pol,\n"
+            "cze, hun, rum, lat, gre, rus, jpn, chi, ara, und\n\n"
 
-            "【출력 형식】(정확히 2~3줄, 다른 텍스트 절대 금지)\n"
-            "★ 반드시 #reason을 첫 줄에 쓰고, $h를 마지막 줄에 쓸 것.\n"
-            "★ $h를 #reason보다 먼저 쓰면 즉시 탈락(Failure).\n\n"
-            "#reason=[← 반드시 여는 대괄호 '[' 로 시작할 것. 시작하지 않으면 탈락(Failure).\n"
-            "  각 단어의 매칭 결과를 빠짐없이 나열한 뒤 '->' 로 결론을 쓸 것.\n"
-            "  형식: [단어1(언어,기능어여부), 단어2(언어), 단어3(언어/미확인), ...] -> 결론 1문장\n"
-            "  예1: [A(eng,기능어), Naturalist(eng), at(eng,기능어), Large(eng)] -> 기능어 2개+eng 100%, eng 확정]\n"
-            "  예2: [What(eng), We(eng), Cannot(eng), Know(eng)] -> 만장일치 eng 100%, eng 확정]\n"
-            "  예3: [De(dut/spa/ita/ger), Chat(fre/eng)] -> 기능어 없음, 어느 언어도 60% 미만, und]\n"
-            "#signals=[감지된 기능어 또는 앵커 단어, 콤마로 구분]  (선택)\n"
-            "$h=[#reason에서 내린 결론과 반드시 일치하는 ISDS 코드 또는 und]"
+            "【출력 형식】(정확히 3줄, 다른 텍스트 절대 금지)\n"
+            "$h=[ISDS 코드 또는 und]\n"
+            "#confidence=[high / medium / low]\n"
+            "#reason=[판단 근거 한 줄 — 어떤 특징을 근거로 판단했는지]\n\n"
+
+            "【출력 예시】\n"
+            "원제: 'Opération Jules Verne'\n"
+            "$h=fre\n"
+            "#confidence=high\n"
+            "#reason=[é 억양 기호와 Jules Verne(프랑스 작가) 고유명사 → 프랑스어 확정]\n\n"
+
+            "원제: 'Kroppen kan selv'\n"
+            "$h=und\n"
+            "#confidence=low\n"
+            "#reason=[북유럽어 패턴이나 덴마크어/노르웨이어 구분 불가 → und]\n\n"
+
+            "원제: 'Method for Acquiring Myakushin'\n"
+            "$h=und\n"
+            "#confidence=low\n"
+            "#reason=[영어 단어 혼재 + Myakushin(러시아계 인명) → 혼합 또는 불명확 → und]\n\n"
+
+            "원제: 'What We Cannot Know'\n"
+            "$h=eng\n"
+            "#confidence=high\n"
+            "#reason=[전형적인 영어 문장 구조와 어휘 → eng 확정]"
         )
 
         user_prompt = f'원제: "{title}"'
@@ -410,24 +348,34 @@ class LangFieldBuilder:
                     {"role": "user",   "content": user_prompt},
                 ],
                 temperature=0,
-                max_tokens=300,   # CoT 단어별 나열 + 결론 여유 확보
+                max_tokens=150,
             )
             if resp.usage:
                 token_tracker.add(resp.usage.prompt_tokens, resp.usage.completion_tokens)
             content = (resp.choices[0].message.content or "").strip()
-            code, reason, signals = _extract_code_and_reason(content, "$h")
 
-            # und는 정상적인 '판단 보류' 결과 — ALLOWED_CODES 체크를 거치되
-            # und는 허용(다음 단계로 위임)
-            if code != "und" and code not in ALLOWED_CODES:
-                self._dbg(
-                    f"🔬 [원제GPT] 알 수 없는 코드 '{code}' → und 처리"
-                )
+            # 파싱: $h, #confidence, #reason 추출
+            code = reason = confidence = ""
+            for ln in content.splitlines():
+                ln = ln.strip()
+                if ln.startswith("$h="):
+                    code = ln[3:].strip().strip("[]")
+                elif ln.lower().startswith("#confidence="):
+                    confidence = ln.split("=", 1)[1].strip().lower()
+                elif ln.lower().startswith("#reason="):
+                    reason = ln.split("=", 1)[1].strip().strip("[]")
+
+            # confidence=low 이면 und로 강제 (불확실한 판정 차단)
+            if confidence == "low":
+                self._dbg(f"🔬 [원제GPT] '{title}' → confidence=low → und 처리")
+                return "und"
+
+            if code not in ALLOWED_CODES:
                 code = "und"
 
-            self._dbg(f"🔬 [원제GPT] '{title}' → $h={code}")
-            if reason:  self._dbg(f"🔬 [원제GPT] 이유: {reason}")
-            if signals: self._dbg(f"🔬 [원제GPT] 단서: {signals}")
+            self._dbg(f"🔬 [원제GPT] '{title}' → $h={code} ({confidence})")
+            if reason:
+                self._dbg(f"🔬 [원제GPT] 이유: {reason}")
             return code
 
         except Exception as e:
@@ -439,53 +387,212 @@ class LangFieldBuilder:
         title: str,
         category: str,
         publisher: str,
+        description: str = "",
+        author_info: str = "",
     ) -> str:
-        """본문 언어($a) 추정. 불확실하면 'und'."""
+        """
+        본문 언어($a) 추정.
+
+        외국어·수험서 카테고리의 어학 교재·대역 문고 등
+        다중 언어 병용 도서를 올바르게 판정하기 위해
+        description·author_info를 추가 단서로 활용.
+
+        반환: 단일 코드('kor') 또는 쉼표 구분 다중 코드('jpn, kor').
+              불확실하면 'und'.
+        """
         if not self._client:
             return "und"
 
+        system_prompt = (
+            "당신은 KORMARC 041 필드(언어코드) 생성을 위한 도서 언어 판정 전문가입니다.\n"
+            "알라딘 등의 서지 데이터에서 제공되는 도서의 본문 언어(041 $a)를 "
+            "ISDS 코드로 정확하게 판정하는 것이 목표입니다.\n\n"
+
+            "[판정 지침]\n"
+            "1. 단순 제목/카테고리 의존 금지:\n"
+            "   제목에 한글이 있어도, description과 저자/역자 정보를 분석하여 "
+            "실제 본문을 구성하는 언어를 파악하십시오.\n"
+            "   ★ 절대 금지: '국내도서' 카테고리이거나 제목에 한글이 있다는 이유만으로 "
+            "무조건 kor로 확정하는 행위.\n\n"
+
+            "2. 다중 언어 병기(혼용) 허용:\n"
+            "   외국어 지문·원문과 한국어 해설·번역이 함께 제공되는 학습서, 수험서, "
+            "대역 문고의 경우 반드시 두 언어를 모두 판별하여 병기하십시오.\n"
+            "   비중이 높은 핵심 학습 언어(외국어)를 먼저 배치하고, "
+            "보조 언어(한국어)를 뒤에 배치하십시오.\n"
+            "   예: 일본어 원문 + 한국어 해설 → jpn, kor\n\n"
+
+            "3. description 키워드 적극 활용:\n"
+            "   '대역', '원서 읽기', '단어장', '해설', 'N3 대비', '지문 수록', "
+            "'원문과 번역' 등의 표현이 있으면 다중 언어 병기 여부를 즉시 판단하십시오.\n\n"
+
+            "4. 카테고리별 기본 판정 가이드:\n"
+            "   · 국내도서>외국어>일본어   : description에 별도 단서 없으면 jpn, kor\n"
+            "   · 국내도서>외국어>영어     : description에 별도 단서 없으면 eng, kor\n"
+            "   · 국내도서>수험서>어학(영어): description에 별도 단서 없으면 eng, kor\n"
+            "   · 국내도서>외국어>중국어   : description에 별도 단서 없으면 chi, kor\n"
+            "   · 국내도서>소설/시 등 일반 : description에 외국어 단서 없으면 kor\n\n"
+            "   ★★ 카테고리보다 제목·description의 실제 언어 단서를 반드시 우선:\n"
+            "   카테고리명이 '영어독해'·'영어'라도 제목이나 description에\n"
+            "   일본어(가나·한자)·중국어·프랑스어 등 다른 언어가 명시되어 있으면\n"
+            "   카테고리를 무시하고 실제 언어를 우선 판정하십시오.\n"
+            "   절대 금지: 카테고리 이름만 보고 실제 본문 언어를 덮어쓰는 행위.\n"
+            "   예: 카테고리='외국어>영어독해', 제목='星の王子さま(어린 왕자 일본어판)'\n"
+            "     → 제목에 일본어(가나)가 명시됨 → jpn, kor (eng 절대 아님)\n"
+            "   예: 카테고리='외국어>영어독해', description='일본어 원문과 한국어 번역 수록'\n"
+            "     → description 단서 우선 → jpn, kor\n\n"
+
+            "5. 외국어·어학수험서 카테고리가 아닌 경우 기본값:\n"
+            "   카테고리가 외국어·어학수험서가 아닌 일반 카테고리(소설, 경제경영, 역사,\n"
+            "   인문학, 컴퓨터, 요리 등)이고, description에도 외국어 지문·원문 혼용\n"
+            "   단서가 전혀 없다면 kor로 판정하십시오.\n"
+            "   이 경우 GPT가 임의로 외국어 가능성을 열어두는 것은 오판입니다.\n\n"
+
+            "[출력 형식] (엄격히 준수)\n"
+            "$a=[ISDS 코드. 2개 이상이면 콤마로 구분: jpn, kor]\n"
+            "#reason=[description 및 카테고리를 바탕으로 한 짧은 근거]\n"
+            "#signals=[대역, 해설, 외국어 원문 등 결정적 단서] (선택)\n\n"
+
+            "[판정 예시]\n"
+            "입력: 제목 '어린 왕자 일본어판', 분류 '국내도서>외국어>일본어', "
+            "description '일본어 원문과 한국어 번역을 나란히 배치하여...'\n"
+            "출력:\n"
+            "$a=[jpn, kor]\n"
+            "#reason=[일본어 원문과 한국어 번역이 대역으로 혼용된 어학 학습서]\n"
+            "#signals=[일본어 원문, 한국어 번역, 대역]\n\n"
+            "입력: 제목 '해커스 토익 Reading', 분류 '국내도서>수험서>어학', "
+            "description '최신 토익 영문 지문 수록 및 상세한 한글 해설 제공'\n"
+            "출력:\n"
+            "$a=[eng, kor]\n"
+            "#reason=[영어 지문과 한국어 해설이 혼용된 수험서]\n"
+            "#signals=[영문 지문, 한글 해설]"
+        )
+
+        user_content = (
+            f"- 제목: {title}\n"
+            f"- 분류: {category}\n"
+            f"- 출판사: {publisher}\n"
+        )
+        if author_info:
+            user_content += f"- 저자/역자 정보: {author_info}\n"
+        if description:
+            user_content += f"- 도서 상세글: {description[:800]}\n"
+
+        try:
+            resp = self._client.chat.completions.create(
+                model=self._model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user",   "content": user_content.strip()},
+                ],
+                temperature=0,
+                max_tokens=200,
+            )
+            if resp.usage:
+                token_tracker.add(resp.usage.prompt_tokens, resp.usage.completion_tokens)
+            content = (resp.choices[0].message.content or "").strip()
+            code, reason, signals = _extract_code_and_reason(content, "$a")
+
+            # 다중 언어 처리: "jpn, kor" → 각 코드 검증 후 재조합
+            codes = [c.strip() for c in code.split(",") if c.strip()]
+            valid_codes = [c for c in codes if c in ALLOWED_CODES]
+            final_code = ", ".join(valid_codes) if valid_codes else "und"
+
+            self._dbg(f"🧭 [GPT 본문언어] $a={final_code}")
+            if reason:  self._dbg(f"🧭 [이유] {reason}")
+            if signals: self._dbg(f"🧭 [단서] {signals}")
+            return final_code
+        except Exception as e:
+            self._dbg_err(f"GPT 오류 (gpt_guess_main_lang): {e}")
+            return "und"
+
+    # ─────────────────────────────────────────────
+    # 2-1a-2. GPT 내부 지식 기반 보완 추론 (2-b단계)
+    # ─────────────────────────────────────────────
+
+    def gpt_guess_by_author_knowledge(
+        self,
+        author_name: str,
+        translator_name: str = "",
+        has_translator: bool = False,
+        title: str = "",
+        original_title: str = "",
+    ) -> str:
+        """
+        Bio 크롤링 성공했지만 소개글에서 국적 단서를 못 찾았을 때,
+        GPT의 학습 데이터(내부 지식)를 활용한 2차 보완 추론.
+
+        할루시네이션 방지:
+          - '모르면 반드시 und'를 명시
+          - 역자 이름 단독으로 원서 언어 단정 금지
+        """
+        if not self._client or not author_name.strip():
+            return "und"
+
+        translator_line = (
+            f"- 역자: {translator_name} (역자가 있으므로 번역서임. "
+            "역자 이름만으로 원서 언어를 단정하지 말 것.)"
+            if has_translator and translator_name.strip()
+            else "- 역자: 없음"
+        )
+        original_title_line = (
+            f"- 원제: {original_title}" if original_title.strip() else ""
+        )
+        title_line = f"- 제목(한국어): {title}" if title.strip() else ""
+
         prompt = f"""
-아래 도서의 본문 언어(041 $a)를 ISDS 코드로 추정.
-가능한 코드: kor, eng, jpn, chi, rus, fre, ger, ita, spa, por, tur
+아래 저자를 당신이 알고 있다면, 그 지식을 바탕으로 원서 언어(041 $h)를 추정하십시오.
 
-입력:
-- 제목: {title}
-- 분류: {category}
-- 출판사: {publisher}
+입력 정보:
+- 저자: {author_name}
+{original_title_line}
+{title_line}
+{translator_line}
 
-지침:
-- '본문 언어'는 이 자료의 현시본(Manifestation) 언어다.
-- 저자 국적, 원작 언어, 시리즈 원산지 등 원작 관련 단서 사용 금지.
-- 카테고리에 '국내도서'가 있거나, 제목에 한글이 1자라도 포함되면 반드시 kor.
-- 허용 코드 밖이거나 불확실하면 'und'.
+판단 지침:
+- 이 저자를 알고 있다면: 국적·주요 집필 언어·대표작의 최초 출간 언어를 먼저 서술하고,
+  그것을 근거로 원서 언어를 판단하십시오.
+- 이 저자를 모르거나 확신이 없다면: 반드시 'und'를 출력하십시오.
+  절대 금지: 모르는 저자를 억지로 추정하는 할루시네이션.
+- 원제가 제공된 경우 문자 체계(가나·한자·라틴 등)를 추가 단서로 활용하십시오.
+- 역자가 있어도 '역자가 한국인이므로 kor'라는 논리는 절대 금지.
+
+★★ 역자 없음 + 외국어 판정 절대 금지 규칙 ★★
+역자 정보가 '역자: 없음'인 경우, 아래 논리로 외국어를 판정하는 것을 절대 금지합니다:
+- '저자가 영어 교육/학습 관련 저자이므로 원서는 영어' → 금지 (저자 전문 분야 ≠ 원서 언어)
+- '저자가 외국어를 가르치므로 원서는 해당 외국어' → 금지
+- '저자가 번역가이므로 원서는 외국어' → 금지
+역자가 없다는 것은 번역서가 아닐 가능성이 높습니다.
+역자 없음 + 저자의 전문 분야가 외국어 관련 → 반드시 'und' 출력.
+역자 없음 + 저자가 명백한 외국인(국적이 외국)이고 해당 국가 언어로 집필 → 해당 언어 허용.
+
+- 가능한 코드: kor, eng, jpn, chi, rus, fre, ger, ita, spa, por, tur, und
 
 출력형식:
-$a=[ISDS 코드]
-#reason=[짧게 근거 요약]
-#signals=[잡은 단서들, 콤마로](선택)
+$h=[ISDS 코드 또는 und]
+#reason=[알고 있는 정보 요약 또는 '이 저자를 알 수 없어 und 반환']
 """.strip()
 
         try:
             resp = self._client.chat.completions.create(
                 model=self._model,
                 messages=[
-                    {"role": "system", "content": "사서용 본문 언어 추정기"},
+                    {"role": "system", "content": "저자 사전 지식 기반 원서 언어 추정기"},
                     {"role": "user",   "content": prompt},
                 ],
                 temperature=0,
+                max_tokens=150,
             )
             if resp.usage:
                 token_tracker.add(resp.usage.prompt_tokens, resp.usage.completion_tokens)
             content = (resp.choices[0].message.content or "").strip()
-            code, reason, signals = _extract_code_and_reason(content, "$a")
+            code, reason, _ = _extract_code_and_reason(content, "$h")
             if code not in ALLOWED_CODES:
                 code = "und"
-            self._dbg(f"🧭 [GPT 본문언어] $a={code}")
-            if reason:  self._dbg(f"🧭 [이유] {reason}")
-            if signals: self._dbg(f"🧭 [단서] {signals}")
+            self._dbg(f"📘 [2-b단계/지식추론] $h={code} | {reason[:80] if reason else ''}")
             return code
         except Exception as e:
-            self._dbg_err(f"GPT 오류 (gpt_guess_main_lang): {e}")
+            self._dbg_err(f"GPT 오류 (gpt_guess_by_author_knowledge): {e}")
             return "und"
 
     # ─────────────────────────────────────────────
@@ -668,30 +775,30 @@ $a=[ISDS 코드]
 
         "### 규칙 L. '한국인 저자 + 외국어 역자' 조합의 절대 원칙 [자동 탈락 조건 포함]\n"
         "저자가 한국인이거나 한국에서 활동하는 인물이더라도,\n"
-        "역자가 특정 외국어 전공자(예: 일본어 박사, 독문학 전공, 노어노문학과 등)임이 확인된 경우,\n"
-        "반드시 아래 논리를 강제 적용하십시오:\n\n"
+        "역자가 존재한다면 반드시 아래 논리를 강제 적용하십시오:\n\n"
         "  ★ 강제 추론 프레임:\n"
-        "    '이 책은 한국인 저자가 해당 외국어(일본어 등)로 집필했거나,\n"
+        "    '이 책은 한국인 저자가 해당 외국어(영어·일본어 등)로 집필했거나,\n"
         "    해외에서 먼저 외국어로 출판된 뒤 한국에 번역 소개된 것이다.'\n\n"
         "  ★ 자동 탈락(Failure) 조건:\n"
-        "    역자의 외국어 전공이 확인된 상태에서 저자의 국적·활동지만을 근거로\n"
-        "    '저자가 한국인이므로 원서는 한국어(kor)다'라고 결론 내리는 행위는\n"
-        "    분석 실패(Failure)로 간주하며 즉시 무효 처리합니다.\n\n"
+        "    역자가 존재하는 상황에서 '저자와 역자 모두 한국인이므로 원서는 한국어(kor)'\n"
+        "    라고 결론 내리는 행위는 분석 실패(Failure)로 간주하며 즉시 무효 처리합니다.\n"
+        "    한국인도 영어 등 외국어로 학술서를 집필하거나 해외 출판 후 역수입할 수 있습니다.\n\n"
         "  ★ 핵심 논거:\n"
-        "    - 역자가 특정 외국어 전공자라는 사실 자체가, 해당 언어의 원문이\n"
-        "      존재한다는 가장 강력한 물리적 증거입니다.\n"
+        "    - 역자가 존재한다는 사실 자체가 원서가 있다는 증거입니다.\n"
         "    - 저자가 한국인이라는 사실은 '원서 언어 = 한국어'를 지지하는 근거가\n"
         "      절대로 될 수 없습니다. 한국인도 외국어로 집필하거나 해외에서 먼저\n"
         "      출판할 수 있기 때문입니다.\n"
-        "    - 역자의 전공 언어 ≠ 저자의 국적 언어일 때, 역자 단서를 우선 채택하고\n"
-        "      저자 국적 단서는 원서 언어 판단에서 제외하십시오.\n\n"
+        "    - 역자의 전공 또는 번역 이력 언어를 원서 언어로 우선 채택하십시오.\n\n"
         "  ★ 판정 예시:\n"
         "    - 저자: 이해영(한국인) + 역자: 하태후(일본어 박사)\n"
         "      → '저자가 한국인이므로 kor' ← 자동 탈락(Failure)\n"
         "      → '역자가 일본어 전공이므로 원문은 jpn' ← 정답\n"
         "    - 저자: 김민준(한국인) + 역자: 박지현(독문학 전공)\n"
         "      → '저자가 한국인이므로 kor' ← 자동 탈락(Failure)\n"
-        "      → '역자가 독문학 전공이므로 원문은 ger' ← 정답\n\n"
+        "      → '역자가 독문학 전공이므로 원문은 ger' ← 정답\n"
+        "    - 저자: 배형민(한국인) + 역자: 박정현(한국인, 영어 원서 번역 이력)\n"
+        "      → '두 사람 모두 한국인이므로 kor' ← 자동 탈락(Failure)\n"
+        "      → '역자가 존재하므로 원서가 있음, 역자 이력으로 eng 추론' ← 정답\n\n"
 
         "## author_signal_confidence\n"
         "- high: 저자·역자 단서가 동일 언어를 가리키거나 결정적 단서 존재\n"
@@ -749,7 +856,7 @@ $a=[ISDS 코드]
         self,
         item: dict,
         original_title: str,
-        author_bio: str,
+        author_bios: dict[str, str],   # {저자명: bio} 매핑 dict
         translator_bio: str,
         translator_name: str,
         author_name: str = "",
@@ -762,6 +869,10 @@ $a=[ISDS 코드]
         if not self._client:
             return None
 
+        # author_bios가 구버전 str로 넘어온 경우 호환 처리
+        if isinstance(author_bios, str):
+            author_bios = {"": author_bios}
+
         sub          = item.get("subInfo") or {}
         authors_list = [a for a in (sub.get("authors") or []) if isinstance(a, dict)]
         writer_names: list[str] = []
@@ -771,13 +882,32 @@ $a=[ISDS 코드]
                 n = (auth.get("authorName") or "").strip()
                 if n:
                     writer_names.append(n)
+        # 저자 없으면 기획자를 폴백으로 수집
+        if not writer_names:
+            for auth in authors_list:
+                role = (auth.get("authorTypeDesc") or auth.get("authorTypeName") or "").strip()
+                if _role_is_planner(role):
+                    n = (auth.get("authorName") or "").strip()
+                    if n:
+                        writer_names.append(n)
         if not writer_names and author_name:
             writer_names = [author_name]
         if not writer_names:
             writer_names = _parse_names_from_raw_author(item.get("author") or "", want_translator=False)
 
-        authors_info    = [self._build_author_info(n, author_bio if i == 0 else "")
-                           for i, n in enumerate(writer_names[:2])]
+        # 저자별 Bio 매핑 — 이름이 일치하면 해당 Bio, 없으면 dict 첫 번째 값 폴백
+        def _get_bio_for(name: str) -> str:
+            if name in author_bios:
+                return author_bios[name]
+            # 이름 부분 매칭 (공백·성명 순서 차이 대응)
+            for k, v in author_bios.items():
+                if k and (k in name or name in k):
+                    return v
+            # 첫 번째 Bio를 대표 폴백 (단독 저자 케이스)
+            return next(iter(author_bios.values()), "") if author_bios else ""
+
+        authors_info    = [self._build_author_info(n, _get_bio_for(n))
+                           for n in writer_names[:4]]
         book_info       = self._build_book_info(item, original_title)
         translator_info = self._build_translator_info(translator_name, translator_bio)
         payload = {
@@ -1133,15 +1263,19 @@ $a=[ISDS 코드]
                 self._dbg("📘 [1.5단계] 원제 없음 → 스킵, 2단계로 진행")
 
             # 2단계: 저자/역자 Bio 크롤링 → GPT 단일 호출
-            author_bio = translator_bio = ""
+            author_bios: dict[str, str] = {}
+            translator_bio = ""
             self._dbg("📘 [2단계] Bio 수집 시작…")
             try:
-                author_bio, translator_bio = self._scraper.fetch_bios(_item)
-                if author_bio:
-                    self._dbg(f"📘 [Bio] 저자 Bio {len(author_bio)}자")
+                author_bios, translator_bio = self._scraper.fetch_bios(_item)
+                if author_bios:
+                    self._dbg(f"📘 [Bio] 저자 Bio {len(author_bios)}명 수집")
+                    for _n, _b in author_bios.items():
+                        if _b:
+                            self._dbg(f"📘 [Bio]   · {_n}: {len(_b)}자")
                 if translator_bio:
                     self._dbg(f"📘 [Bio] 역자 Bio {len(translator_bio)}자")
-                if not author_bio and not translator_bio:
+                if not author_bios and not translator_bio:
                     self._dbg("📘 [Bio] Bio 없음")
             except Exception as e:
                 self._dbg_err(f"Bio 수집 오류: {e}")
@@ -1170,7 +1304,7 @@ $a=[ISDS 코드]
             llm_result = self.gpt_nonfiction_payload(
                 item=_item,
                 original_title=original_title,
-                author_bio=author_bio,
+                author_bios=author_bios,
                 translator_bio=translator_bio,
                 translator_name=translator_name_for_payload,
                 author_name=_author_name_for_payload,
@@ -1186,11 +1320,53 @@ $a=[ISDS 코드]
                     )
                     lang_name = "und"
 
+                # ★ 역자 없음 + 외국어/kor 판정 차단
+                if not has_translator:
+                    _ln_lower = lang_name.strip().lower()
+                    if _ln_lower not in ("und", ""):
+                        if _ln_lower in ("kor", "korean", "한국어"):
+                            self._dbg(
+                                f"📘 [2단계/GPT] ⚠️ 역자 없음 + 'kor' 판정 → "
+                                "$h 불필요 (번역서 아님), und 처리"
+                            )
+                        else:
+                            self._dbg(
+                                f"📘 [2단계/GPT] ⚠️ 역자 없음 + 외국어 판정('{lang_name}') → "
+                                "und 처리 (저자 국적/전공 ≠ 원서 언어)"
+                            )
+                        lang_name = "und"
+
                 isds = _resolve_lang_name_to_isds(lang_name) if lang_name else None
                 if isds and isds in ALLOWED_CODES:
                     self._dbg(f"📘 [2단계/GPT] 확정: {lang_name} → {isds}")
                     return isds
                 self._dbg(f"📘 [2단계/GPT] 미확정 (inferred_language='{lang_name}')")
+
+            # 2-b단계: GPT 내부 지식 보완 추론
+            # Bio 수집은 됐지만 소개글에서 국적 단서를 못 찾은 경우,
+            # GPT가 저자 이름에 대해 알고 있는 정보로 2차 추론 시도.
+            # 모르는 저자면 und 반환 → 3단계 규칙 폴백으로 진행.
+            self._dbg("📘 [2-b단계] GPT 내부 지식 기반 보완 추론 시작…")
+            knowledge_result = self.gpt_guess_by_author_knowledge(
+                author_name=_author_name_for_payload,
+                translator_name=translator_name_for_payload,
+                has_translator=has_translator,
+                title=title,
+                original_title=original_title,
+            )
+            if knowledge_result and knowledge_result != "und":
+                _kr_lower = knowledge_result.strip().lower()
+                if not has_translator and _kr_lower not in ("kor", "korean", "한국어"):
+                    self._dbg(
+                        f"📘 [2-b단계] ⚠️ 역자 없음 + 외국어 판정('{knowledge_result}') → "
+                        "und 처리 (저자 전문분야 ≠ 원서 언어)"
+                    )
+                elif _kr_lower in ("kor", "korean", "한국어"):
+                    self._dbg("📘 [2-b단계] 지식 추론 결과 kor → $h 불필요, und 처리")
+                else:
+                    self._dbg(f"📘 [2-b단계] 지식 추론 확정: {knowledge_result}")
+                    return knowledge_result
+            self._dbg("📘 [2-b단계] 지식 추론 미확정 → 3단계로 진행")
 
             # 3단계: 규칙 기반 폴백
             rule_result = self._try_rule(subject_lang, rule_from_original, "Rule-based(폴백)")
@@ -1204,6 +1380,7 @@ $a=[ISDS 코드]
         # ── 문학 파이프라인 ───────────────────────────────────
         self._dbg("📘 [Pipeline] 문학: 카테고리 확인 → Rule-based → Bio크롤링+GPT Payload")
 
+        self._dbg(f"📘 [Step0] 카테고리 텍스트: '{category_text}'")
         cat_lang_hint = self.detect_language_from_category(category_text)
         if cat_lang_hint:
             self._dbg(
@@ -1226,15 +1403,16 @@ $a=[ISDS 코드]
 
         # Step 2: 저자/역자 Bio 크롤링 → GPT Payload 단일 호출
         _item = item or {}
-        author_bio = translator_bio = ""
+        author_bios: dict[str, str] = {}
+        translator_bio = ""
         self._dbg("📘 [Step2] Bio 수집 시작…")
         try:
-            author_bio, translator_bio = self._scraper.fetch_bios(_item)
-            if author_bio:
-                self._dbg(f"📘 [Bio] 저자 Bio {len(author_bio)}자")
+            author_bios, translator_bio = self._scraper.fetch_bios(_item)
+            if author_bios:
+                self._dbg(f"📘 [Bio] 저자 Bio {len(author_bios)}명 수집")
             if translator_bio:
                 self._dbg(f"📘 [Bio] 역자 Bio {len(translator_bio)}자")
-            if not author_bio and not translator_bio:
+            if not author_bios and not translator_bio:
                 self._dbg("📘 [Bio] Bio 없음")
         except Exception as e:
             self._dbg_err(f"Bio 수집 오류: {e}")
@@ -1263,7 +1441,7 @@ $a=[ISDS 코드]
         llm_result = self.gpt_nonfiction_payload(
             item=_item,
             original_title=original_title,
-            author_bio=author_bio,
+            author_bios=author_bios,
             translator_bio=translator_bio,
             translator_name=translator_name_for_payload,
             author_name=_author_name_for_payload,
@@ -1280,12 +1458,48 @@ $a=[ISDS 코드]
                 )
                 lang_name = "und"
 
+            # ★ 역자 없음 + 모든 언어 판정 차단
+            # 역자 없으면 $h 자체가 불필요
+            if not has_translator:
+                _ln_lower = lang_name.strip().lower()
+                if _ln_lower not in ("und", ""):
+                    if _ln_lower in ("kor", "korean", "한국어"):
+                        self._dbg("📘 [Step2/GPT] ⚠️ 역자 없음 + 'kor' 판정 → $h 불필요, und 처리")
+                    else:
+                        self._dbg(f"📘 [Step2/GPT] ⚠️ 역자 없음 + 외국어 판정('{lang_name}') → und 처리")
+                    lang_name = "und"
+
             isds = _resolve_lang_name_to_isds(lang_name) if lang_name else None
             if isds and isds in ALLOWED_CODES:
                 self._dbg(f"📘 [Step2/GPT] 확정: {lang_name} → {isds}")
                 author_hint = isds
             else:
                 self._dbg(f"📘 [Step2/GPT] 미확정 (inferred_language='{lang_name}')")
+
+        # ── Step 2-b: GPT 내부 지식 보완 추론 ─────────────────
+        if not author_hint:
+            self._dbg("📘 [Step2-b] GPT 내부 지식 기반 보완 추론 시작…")
+            knowledge_result = self.gpt_guess_by_author_knowledge(
+                author_name=_author_name_for_payload,
+                translator_name=translator_name_for_payload,
+                has_translator=has_translator,
+                title=title,
+                original_title=original_title,
+            )
+            if knowledge_result and knowledge_result != "und":
+                _kr_lower = knowledge_result.strip().lower()
+                if not has_translator and _kr_lower not in ("kor", "korean", "한국어"):
+                    self._dbg(
+                        f"📘 [Step2-b] ⚠️ 역자 없음 + 외국어 판정('{knowledge_result}') → "
+                        "und 처리 (저자 전문분야 ≠ 원서 언어)"
+                    )
+                elif _kr_lower in ("kor", "korean", "한국어"):
+                    self._dbg("📘 [Step2-b] 지식 추론 결과 kor → $h 불필요, und 처리")
+                else:
+                    self._dbg(f"📘 [Step2-b] 지식 추론 확정: {knowledge_result}")
+                    author_hint = knowledge_result
+            else:
+                self._dbg("📘 [Step2-b] 지식 추론 미확정 → 충돌 조정으로 진행")
 
         lang_h = self.reconcile_language(
             candidate=author_hint or "und",
@@ -1347,16 +1561,46 @@ $a=[ISDS 코드]
             self._dbg("📘 [DEBUG] 규칙 기반 1차 lang_a =", lang_a)
 
             # 강한 가드: '국내도서'면 kor 고정
-            if self.is_domestic_category(category_text):
+            # 단, 외국어·어학 수험서 카테고리는 예외 — 다중 언어 혼용 가능성
+            _is_lang_learning = "외국어" in (category_text or "")
+            if self.is_domestic_category(category_text) and not _is_lang_learning:
                 self._dbg("📘 [판정] '국내도서' 감지 → $a=kor 강제")
                 lang_a = "kor"
+            elif self.is_domestic_category(category_text) and _is_lang_learning:
+                self._dbg("📘 [판정] '국내도서>외국어/어학수험서' 감지 → GPT 다중 언어 판정으로 위임")
+                lang_a = "und"  # GPT 판정으로 강제 위임
 
-            # GPT 보조: und/eng일 때만 호출
+            # GPT 보조: und/eng일 때만 호출 (description도 전달)
+            # fulldescription·Story·toc 등 모든 소개글 필드를 합쳐서 전달
+            _desc_parts: list[str] = []
+            for _dk in ("fullDescription", "fulldescription", "Story", "story", "description", "toc", "Toc"):
+                _dv = (item.get(_dk) or "") if isinstance(item, dict) else ""
+                if _dv and _dv not in _desc_parts:
+                    _desc_parts.append(_dv)
+            _desc_for_gpt = " ".join(_desc_parts)[:800]
+            _author_for_gpt = item.get("author", "") if isinstance(item, dict) else ""
+
+            # 제목에서 비라틴 문자 사전 감지 → GPT에 힌트로 전달
+            _title_lang_hint = ""
+            if _RE_KANA.search(title):   # 가나 → 일본어
+                _title_lang_hint = "※ 제목에 일본어(가나) 문자가 포함되어 있습니다. 본문은 jpn일 가능성이 매우 높습니다."
+            elif _RE_HAN.search(title) and not _RE_KANA.search(title):
+                _title_lang_hint = "※ 제목에 한자가 포함되어 있습니다. 본문은 chi 또는 jpn일 가능성이 있습니다."
+            if _title_lang_hint:
+                _desc_for_gpt = _title_lang_hint + "\n\n" + _desc_for_gpt
+                self._dbg(f"📘 [본문언어] 제목 비라틴 감지: {_title_lang_hint[:40]}")
+
             if lang_a in ("und", "eng"):
                 self._dbg("📘 [설명] und/eng → GPT 본문 언어 재판정…")
-                gpt_a = self.gpt_guess_main_lang(title, category_text, publisher)
+                gpt_a = self.gpt_guess_main_lang(
+                    title, category_text, publisher,
+                    description=_desc_for_gpt,
+                    author_info=_author_for_gpt,
+                )
                 self._dbg(f"📘 [설명] GPT lang_a = {gpt_a}")
-                lang_a = gpt_a if gpt_a in ALLOWED_CODES else "und"
+                # 다중 언어("jpn, kor") 그대로 허용 — 쉼표 분리 후 첫 코드만 검증
+                _first = gpt_a.split(",")[0].strip() if gpt_a else "und"
+                lang_a = gpt_a if _first in ALLOWED_CODES else "und"
 
             # ── 역자 존재 여부 사전 감지 ───────────────────────
             has_translator = _has_translator_in_item(item)
@@ -1387,14 +1631,29 @@ $a=[ISDS 코드]
                 lang_h = "und"
 
             has_h = bool(lang_h and lang_h != "und" and lang_h != lang_a)
+
+            # 다중 언어 lang_a("jpn, kor") → $ajpn$akor 형태로 조립
+            _a_codes = [c.strip() for c in (lang_a or "").split(",") if c.strip() in ALLOWED_CODES]
+            if not _a_codes:
+                _a_codes = [lang_a] if lang_a and lang_a != "und" else []
+            _a_part = "".join(f"$a{c}" for c in _a_codes) if _a_codes else f"$a{lang_a}"
+
             if has_h:
-                tag_041 = f"041 $a{lang_a} $h{lang_h}"
+                tag_041 = f"041 {_a_part} $h{lang_h}"
             else:
-                tag_041 = f"041 $a{lang_a}"
+                tag_041 = f"041 {_a_part}"
 
             # 비번역서($h 없음 + 역자 없음) → 041/546 모두 불필요
-            if not has_h and not has_translator:
+            # 단, $a가 2개 이상(다국어 혼재)이면 역자 없어도 041/546 출력
+            _is_multilang = len(_a_codes) >= 2
+            if not has_h and not has_translator and not _is_multilang:
                 return None, None, original_title
+
+            # 다국어 혼재($a 2개 이상, $h 없음) → 041 + 546("혼합수록됨") 출력
+            if not has_h and _is_multilang:
+                tag_546 = self.generate_546_from_041(tag_041)
+                self._dbg(f"📘 [다국어 혼재] $h 없음 + $a {len(_a_codes)}개 → 041/546 출력")
+                return tag_041, tag_546, original_title
 
             # 번역서인데 $h 판정 실패 → 041($a만)은 유지, 546은 생성 불가
             if not has_h and has_translator:
@@ -1419,29 +1678,49 @@ $a=[ISDS 코드]
     @staticmethod
     def generate_546_from_041(marc_041: str) -> str:
         """
-        "041 $akor $hrus" → "러시아어 원작을 한국어로 번역"
+        "041 $akor $hrus"           → "러시아어 원작을 한국어로 번역"
+        "041 $ajpn$akor $hfre"      → "프랑스어 원작을 일본어와 한국어로 번역"
+        "041 $akor"                  → "한국어로 씀"
+        "041 $ajpn$akor"             → "일본어, 한국어 병기"
         """
         a_codes: list[str] = []
         h_code:  str | None = None
 
-        for part in marc_041.split():
-            if part.startswith("$a"):
-                a_codes.append(part[2:])
-            elif part.startswith("$h"):
-                h_code = part[2:]
+        # "$ajpn$akor" 와 "$ajpn $akor" 두 형태 모두 지원
+        # 먼저 공백 기준으로 토큰 분리 후, 각 토큰 내 $a 반복 패턴 처리
+        for token in marc_041.split():
+            if token.startswith("$h"):
+                h_code = token[2:]
+            else:
+                # 하나의 토큰에 $a가 여러 개 붙어있을 수 있음 (예: $ajpn$akor)
+                for m in re.finditer(r'\$a([a-z]{3})', token):
+                    a_codes.append(m.group(1))
+
+        def _lang_name(code: str) -> str:
+            return ISDS_LANGUAGE_CODES.get(code, "알 수 없음")
+
+        h_lang = _lang_name(h_code) if h_code else None
+
+        if not a_codes:
+            return "언어 정보 없음"
 
         if len(a_codes) == 1:
-            a_lang = ISDS_LANGUAGE_CODES.get(a_codes[0], "알 수 없음")
-            if h_code:
-                h_lang = ISDS_LANGUAGE_CODES.get(h_code, "알 수 없음")
+            a_lang = _lang_name(a_codes[0])
+            if h_lang:
                 return f"{h_lang} 원작을 {a_lang}로 번역"
             return f"{a_lang}로 씀"
 
-        if len(a_codes) > 1:
-            langs = [ISDS_LANGUAGE_CODES.get(c, "알 수 없음") for c in a_codes]
-            return f"{'、'.join(langs)} 병기"
-
-        return "언어 정보 없음"
+        # $a가 2개 이상 — 중역 또는 다국어 혼재
+        a_langs = [_lang_name(c) for c in a_codes]
+        if h_lang:
+            # $h 있음 — 중역
+            if len(a_langs) == 2:
+                return f"{h_lang} 원작을 {a_langs[0]}와 {a_langs[1]}로 번역"
+            joined = ", ".join(a_langs[:-1]) + "와 " + a_langs[-1]
+            return f"{h_lang} 원작을 {joined}로 번역"
+        else:
+            # $h 없음 — 다국어 혼재 도서
+            return f"본문은 {', '.join(a_langs)}가 혼합수록됨"
 
     # ─────────────────────────────────────────────
     # 2-7. MRK 포맷 변환
@@ -1521,7 +1800,18 @@ def _role_is_translator(role: str) -> bool:
 def _role_is_writer(role: str) -> bool:
     """저자(지은이) 역할 여부 판별."""
     r = (role or "").strip()
-    return any(k in r for k in ("지은이", "지음", "글"))
+    return any(k in r for k in (
+        "지은이", "지음", "글",
+        "엮은이", "엮음", "편자", "편저자", "편저", "편",
+        "공저자", "공저", "공동저자",
+        "감수",
+    ))
+
+
+def _role_is_planner(role: str) -> bool:
+    """기획 역할 여부 판별 — 저자 없을 때 폴백으로 사용."""
+    r = (role or "").strip()
+    return "기획" in r
 
 
 def _parse_names_from_raw_author(raw_author: str, want_translator: bool) -> list[str]:
@@ -1562,15 +1852,18 @@ def _extract_code_and_reason(
     content: str,
     code_key: str = "$h",
 ) -> tuple[str, str, str]:
-    """GPT 응답을 파싱해 (code, reason, signals) 튜플 반환."""
+    """GPT 응답을 파싱해 (code, reason, signals) 튜플 반환.
+    다중 언어 코드($a=[jpn, kor])의 대괄호도 자동으로 제거한다."""
     code = reason = signals = ""
     for ln in [l.strip() for l in (content or "").splitlines() if l.strip()]:
         if ln.startswith(f"{code_key}="):
-            code = ln.split("=", 1)[1].strip()
+            raw = ln.split("=", 1)[1].strip()
+            # 대괄호 제거: "[jpn, kor]" → "jpn, kor"
+            code = raw.strip("[]").strip()
         elif ln.lower().startswith("#reason="):
-            reason = ln.split("=", 1)[1].strip()
+            reason = ln.split("=", 1)[1].strip().strip("[]")
         elif ln.lower().startswith("#signals="):
-            signals = ln.split("=", 1)[1].strip()
+            signals = ln.split("=", 1)[1].strip().strip("[]")
     return code or "und", reason, signals
 
 
