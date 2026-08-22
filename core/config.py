@@ -81,7 +81,12 @@ class Settings(BaseSettings):
     # (「056 분류모델 개선 및 I2M 연계 추진안」 4절 "모델 경로와 버전의 설정값 분리").
     kdc_model_dir: str = Field(default="", description="KDC 분류 모델 디렉터리 경로")
     kdc_model_version: str = Field(
-        default="model8_large_swa", description="사용 중인 KDC 모델 버전 표시용 이름"
+        default="model21_large_swa", description="사용 중인 KDC 모델 버전 표시용 이름"
+    )
+    # 입력문 스키마. 비워두면 모델 버전명으로 추론한다(model21 → v21, 그 외 → v8).
+    # 모델만 바꾸고 스키마를 안 바꾸는 실수를 막으려고 추론을 기본으로 둔다.
+    kdc_input_schema: str = Field(
+        default="", description="056 입력 스키마 강제 지정 ('v8' | 'v21' | 빈 값=자동)"
     )
 
     # 056 $2(판표시) — 정독도서관은 KDC 6판을 쓴다. 판이 바뀌면 이 값만 고치면 된다.
@@ -89,12 +94,20 @@ class Settings(BaseSettings):
 
     # 입력문 조립 상수 — 학습 전처리(prepare_data_vN.py)의 값과 반드시 같아야 한다.
     # 어긋나면 정확도가 조용히 떨어진다(model8 실측: top-1 88.0% → 83.0%).
-    # 기본값은 model8(prepare_data_v8.py) 기준이며, model11부터는 입력 예산이 확장됐다.
-    #   model11+ (prepare_data_v11_longctx.py): max_len 512 / toc 200 / desc 140
-    kdc_max_len: int = Field(default=384, description="모델 입력 최대 토큰 수")
-    kdc_keyword_token_budget: int = Field(default=60, description="653 키워드 토큰 예산")
-    kdc_toc_token_budget: int = Field(default=150, description="목차 토큰 예산")
-    kdc_desc_token_budget: int = Field(default=100, description="책소개 토큰 예산")
+    # 기본값은 현재 채택 모델인 model21(prepare_data_v21_no653_richfields.py) 기준이다.
+    #   model8  : max_len 384 / toc 150 / desc 100
+    #   model21 : max_len 512 / toc 200 / desc 140 + 보강필드 5종
+    kdc_max_len: int = Field(default=512, description="모델 입력 최대 토큰 수")
+    kdc_toc_token_budget: int = Field(default=200, description="목차 토큰 예산")
+    kdc_desc_token_budget: int = Field(default=140, description="책소개 토큰 예산")
+    # v8(model8~12) 전용 — model21은 653을 입력에 쓰지 않는다.
+    kdc_keyword_token_budget: int = Field(default=60, description="653 키워드 토큰 예산(v8 전용)")
+    # v21 신설 보강필드
+    kdc_subtitle_token_budget: int = Field(default=30, description="부제 토큰 예산(v21)")
+    kdc_publisher_token_budget: int = Field(default=15, description="발행자 토큰 예산(v21)")
+    kdc_addcode_token_budget: int = Field(default=10, description="부가기호 토큰 예산(v21)")
+    kdc_kpipa_toc_token_budget: int = Field(default=100, description="KPIPA 목차 토큰 예산(v21)")
+    kdc_kpipa_author_token_budget: int = Field(default=100, description="KPIPA 저자소개 토큰 예산(v21)")
 
     # ── 피드백 DB ─────────────────────────────────────────────
     feedback_db_path: str = Field(default="./feedback.db", description="SQLite 피드백 DB 경로")

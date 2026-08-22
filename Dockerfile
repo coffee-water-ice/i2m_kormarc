@@ -52,7 +52,7 @@ RUN pip install --no-cache-dir --user -r requirements.txt \
 # 저장소가 비공개라 빌드에도 토큰이 필요하다. Space 설정에서 HF_TOKEN을
 # "Secret"으로 등록하면 아래 --mount=type=secret 으로 읽을 수 있다. ENV로 받지
 # 않는 이유는 ENV 값이 이미지 레이어에 그대로 남기 때문이다.
-ARG KDC_MODEL_REPO=I2Muser/kdc-model12
+ARG KDC_MODEL_REPO=I2Muser/kdc-model21
 ENV KDC_MODEL_DIR=${KDC_MODEL_REPO}
 
 # 다운로드 로직은 별도 파일에 둔다. Dockerfile 안에 긴 python -c를 역슬래시로

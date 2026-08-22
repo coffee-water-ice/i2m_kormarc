@@ -245,11 +245,22 @@ def _settings_to_secrets(settings: Settings) -> dict:
     # 토큰 예산·MAX_LEN은 학습 전처리와 일치해야 하는 값이라 모델 라운드마다 다르다.
     if settings.kdc_model_dir:
         os.environ.setdefault("KDC_MODEL_DIR", settings.kdc_model_dir)
+    # KDC_MODEL_VERSION은 표시용일 뿐 아니라 입력 스키마 판정의 근거다
+    # (marc_056.input_schema가 "model21" 포함 여부를 본다). 예전에는 이 값을 환경에
+    # 넣지 않아, .env로만 설정하면 스키마가 항상 v8로 잡히는 문제가 있었다.
+    os.environ.setdefault("KDC_MODEL_VERSION", settings.kdc_model_version)
+    if settings.kdc_input_schema:
+        os.environ.setdefault("KDC_INPUT_SCHEMA", settings.kdc_input_schema)
     os.environ.setdefault("KDC_EDITION", settings.kdc_edition)
     os.environ.setdefault("KDC_MAX_LEN", str(settings.kdc_max_len))
     os.environ.setdefault("KDC_KEYWORD_TOKEN_BUDGET", str(settings.kdc_keyword_token_budget))
     os.environ.setdefault("KDC_TOC_TOKEN_BUDGET", str(settings.kdc_toc_token_budget))
     os.environ.setdefault("KDC_DESC_TOKEN_BUDGET", str(settings.kdc_desc_token_budget))
+    os.environ.setdefault("KDC_SUBTITLE_TOKEN_BUDGET", str(settings.kdc_subtitle_token_budget))
+    os.environ.setdefault("KDC_PUBLISHER_TOKEN_BUDGET", str(settings.kdc_publisher_token_budget))
+    os.environ.setdefault("KDC_ADDCODE_TOKEN_BUDGET", str(settings.kdc_addcode_token_budget))
+    os.environ.setdefault("KDC_KPIPA_TOC_TOKEN_BUDGET", str(settings.kdc_kpipa_toc_token_budget))
+    os.environ.setdefault("KDC_KPIPA_AUTHOR_TOKEN_BUDGET", str(settings.kdc_kpipa_author_token_budget))
 
     return {
         "ALADIN_TTB_KEY":  settings.aladin_ttb_key,
