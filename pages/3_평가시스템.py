@@ -753,6 +753,15 @@ if "eval_resume_ckpt" in st.session_state:
     _resume_meta, _resume_done = _load_checkpoint(_resume_path)
     if _resume_meta and _resume_meta.get("isbns"):
         st.subheader(f"이어서 실행 중 — {_resume_meta.get('system', '')}")
+        # 이어서 실행은 GPT 실패로 중단된 직후에 누르는 경우가 많다. 문제가 실제로
+        # 해결됐는지 확인하지 않고 재개하면 같은 자리에서 다시 멈춘다.
+        _resume_live = _openai_live(force=True)
+        if not _resume_live.get("ok"):
+            st.error(
+                f"⛔ **재개하지 않았습니다** — {_resume_live.get('detail', '')}\n\n"
+                "원인을 해결한 뒤 다시 눌러 주세요. 지금까지 처리된 결과는 그대로 보존됩니다."
+            )
+            st.stop()
         _resume_results = _run_batch(
             _resume_meta["system"], _resume_meta["isbns"], _resume_path, _resume_done
         )
@@ -840,11 +849,21 @@ if _live and not _live.get("ok"):
         _openai_live(force=True)
         st.rerun()
 elif _live.get("ok"):
-    st.caption("✅ OpenAI 실호출 점검 통과 — 실행 중에도 25건마다 재점검합니다.")
+    st.caption("✅ OpenAI 실호출 점검 통과 — 실행 직전과 실행 중 25건마다 다시 확인합니다.")
 
 _blocked = bool(_live) and not _live.get("ok")
 
 if st.button("생성 실행", type="primary", disabled=not unique_isbns or _blocked):
+    # 버튼을 누른 이 시점에 캐시를 무시하고 새로 검사한다. 위 표시는 최대 1시간 된
+    # 값일 수 있는데, 그 사이에 크레딧이 떨어졌다면 200건을 헛돌리게 된다.
+    _live_now = _openai_live(force=True)
+    if not _live_now.get("ok"):
+        st.error(
+            f"⛔ **실행을 시작하지 않았습니다** — {_live_now.get('detail', '')}\n\n"
+            "위 표시는 이전 점검 결과였고, 지금 다시 확인하니 호출이 되지 않습니다."
+        )
+        st.stop()
+
     total = len(unique_isbns)
 
     # 체크포인트 — (시스템, ISBN 목록)이 같으면 항상 같은 파일. 이미 끝난 건이 있으면
