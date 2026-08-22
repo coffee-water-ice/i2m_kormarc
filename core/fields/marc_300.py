@@ -505,6 +505,40 @@ def build_300_field(item: dict, secrets: dict | None = None) -> tuple[str, Field
         toc_text      = detail_result.get("toc_text", "")
         illus_diag    = detail_result.get("illus_diagnosis", {"sources": {}, "detected": []})
 
+        # 상세페이지 HTML 파싱으로 목차를 못 얻으면 getContents.aspx를 직접 부른다.
+        #
+        # 알라딘이 페이지 구조를 바꾸면서 목차·책소개가 Ere_prod_mconts_box에서
+        # 사라졌다(2026-08 확인: 남은 레이블이 기본정보·시리즈·이벤트뿐). 그 결과
+        # 평가 300건에서 목차가 100% 결손이었고, 056 모델 입력의 200토큰짜리 가장
+        # 큰 자리가 통째로 비어 정확도가 눌렸다.
+        #
+        # 653은 같은 문제를 getContents.aspx 직접 호출로 이미 우회하고 있어
+        # (api/aladin_scraper.crawl_aladin_publisher_intro_and_toc) 그 경로를 재사용한다.
+        # 실측 20건 전건 목차 확보. 기존 파싱을 지우지 않고 폴백으로 두는 이유는
+        # 알라딘이 구조를 되돌릴 수도 있고, 되돌아오면 추가 호출 없이 그대로 동작하기
+        # 때문이다.
+        #
+        # 주의: 이 보강은 **056 입력용 toc_text에만** 반영한다. 300 $b 삽화 판정은
+        # 이 시점보다 앞선 _parse_aladin_physical_info 안에서 이미 끝났으므로 여기서
+        # 목차를 채워도 판정에 쓰이지 않는다. 판정까지 고치려면 파싱 이전 단계에
+        # 넣어야 하는데, 그러면 300 $b 결과가 달라져 300 담당자의 평가 조건이
+        # 바뀐다 — 그 판단은 300 담당자 몫이라 여기서는 건드리지 않는다.
+        toc_from_getcontents = False
+        if not toc_text.strip():
+            # 알라딘 item의 ISBN-13은 isbn13 키에 있다(isbn 키는 ISBN-10 또는 K로
+            # 시작하는 알라딘 자체 코드라 getContents 조회에 쓸 수 없다).
+            isbn13 = str((item or {}).get("isbn13") or "").strip()
+            if isbn13:
+                try:
+                    from api.aladin_scraper import crawl_aladin_publisher_intro_and_toc
+                    crawled = crawl_aladin_publisher_intro_and_toc(isbn13)
+                    if crawled.get("toc"):
+                        toc_text = crawled["toc"]
+                        toc_from_getcontents = True
+                        dbg(f"[300] 목차를 getContents로 보강 ({len(toc_text)}자) — 056 입력용")
+                except Exception as e:
+                    dbg_err("[300] getContents 목차 보강 실패:", e)
+
         f_300 = Field(tag="300", indicators=[" ", " "], subfields=subfields_300)
 
         if err:
@@ -517,7 +551,13 @@ def build_300_field(item: dict, secrets: dict | None = None) -> tuple[str, Field
         if toc_text:
             dbg(f"[300] 목차 추출됨 ({len(toc_text)}자)")
 
-        return tag_300, f_300, {"toc_text": toc_text, "illus_diagnosis": illus_diag}
+        return tag_300, f_300, {
+            "toc_text": toc_text,
+            "illus_diagnosis": illus_diag,
+            # 목차를 어디서 얻었는지. 알라딘이 페이지 구조를 되돌리면 이 값이
+            # False로 돌아오므로, 폴백을 언제까지 유지할지 판단하는 근거가 된다.
+            "toc_from_getcontents": toc_from_getcontents,
+        }
 
     except Exception as e:
         dbg_err(f"[300] 생성 중 예외: {e}")
