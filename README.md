@@ -3,6 +3,7 @@
 041/245/653/260+300 4개 폴더 + 2025년 코드(단일 파일 `1215_main.py`)를 하나의
 시스템으로 합치는 통합 프로젝트다. 자세한 배경은 상위 폴더의 `통합_계획.md`,
 `docs/INTEGRATION_SURVEY.md`, `docs/INTEGRATION_PRINCIPLES.md`를 참고할 것.
+
 사이트: i2m-i2m-kormarc.hf.space
 
 ## 현재 상태
