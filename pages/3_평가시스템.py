@@ -40,6 +40,13 @@ CSV 컬럼 구성:
   확률과 그 비율, 입력 결손(653/목차/책소개) 여부로, 056 채점기준표(공통_056 시트)의
   R~Y열에 대응한다. 이 값들은 MRK 문자열에는 남지 않고 백엔드 응답 meta에만 있어서
   체크포인트에 meta를 함께 저장한다. 기존 I2M은 2·3순위가 원리적으로 없어 "미생성".
+- 그 뒤에 소요시간·토큰 컬럼 19개(EVAL_PERF_HEADERS)를 붙인다. ISBN 전체 소요시간 1개 +
+  app.py가 필드를 처리하는 9단계(020/490·830/041·546/245/246·500·700·710·900/260/300/
+  653/056) 각각의 소요시간(ms)·토큰 2개씩. GPT를 안 쓰는 필드는 토큰이 항상 0이다.
+- 마지막에 "260 발행지 출처"(EVAL_SOURCE_HEADERS) 1개 — 260 $a가 ISBN 접두-발행지
+  연결표/KPIPA·알라딘·행안부 API/최종 폴백 중 어느 경로로 확정됐는지. pages/1의
+  _SOURCE_LABEL과 같은 매핑.
+- 위 세 그룹(056·성능·발행지 출처) 전부 기존 I2M은 원본 코드에 해당 진단값이 없어 "미생성".
 - "식별기호 삭제 + 정규화": MRK의 "$a"/"$b" 같은 서브필드 식별기호는 컬럼 이름으로 흡수되고
   셀 값에는 남지 않는다. 같은 서브필드가 한 필드 안에서 반복되면 ", "로, 같은 태그가 필드
   자체로 반복되면(700/710/653 등 다권/다저자) " ; "로 이어붙인다. 020만 예외적으로 반복
@@ -137,6 +144,48 @@ EVAL_056_HEADERS: list[str] = [
     # 제외하거나 재실행해야 한다.
     "GPT호출(1/0)", "GPT토큰",
 ]
+
+# ── 소요시간·토큰 전용 컬럼(전체 + 필드별) ─────────────────────────
+# app.py의 _run_conversion()이 020/490·830/041·546/245/246·500·700·710·900/260/300/
+# 653/056 아홉 단계로 나눠 각각의 소요시간(ms)·토큰을 meta["field_elapsed_ms"]/
+# meta["field_tokens"]에 담아준다(호출 순서 = 아래 딕셔너리 순서). 라벨은 그 딕셔너리의
+# 키 이름을 그대로 사람이 읽기 좋게 바꾼 것뿐이라, app.py 쪽 step 이름이 바뀌면
+# 여기도 같이 맞춰야 한다.
+FIELD_STEP_LABELS: dict[str, str] = {
+    "020": "020",
+    "490_830": "490·830",
+    "041_546": "041·546",
+    "245": "245",
+    "246_500_700_710_900": "246·500·700·710·900",
+    "260": "260",
+    "300": "300",
+    "653": "653",
+    "056": "056",
+}
+
+EVAL_PERF_HEADERS: list[str] = ["소요시간(초)"] + [
+    h
+    for label in FIELD_STEP_LABELS.values()
+    for h in (f"{label} 소요(ms)", f"{label} 토큰")
+]
+
+# ── 260(발행사항) 발행지 출처 ────────────────────────────────────
+# 260 $a가 어느 경로(ISBN 접두-발행지 연결표 / KPIPA·알라딘·행안부 API / 최종
+# 폴백)로 확정됐는지는 MRK 문자열엔 안 남고 meta["bundle_source"]에만 있다.
+# pages/1_2026_ISBN_변환.py의 _SOURCE_LABEL과 같은 매핑을 그대로 옮겼다(페이지끼리
+# import하지 않는 이 프로젝트 관례상 의도적 중복).
+_SOURCE_LABEL: dict[str, str] = {
+    "ISBN_PREFIX_DB":      "📖 ISBN발행자번호-발행지 연결표",
+    "KPIPA_API→DB":        "🔗 KPIPA API → 발행처명-주소 연결표",
+    "ALADIN→DB":           "📚 알라딘 → 발행처명-주소 연결표",
+    "ALADIN→IMPRINT→DB":   "📚 알라딘 → 임프린트 → 발행처명-주소 연결표",
+    "ALADIN→IMPRINT→MOIS": "🏛️ 알라딘 → 임프린트 → 행정안전부 API",
+    "ALADIN(음차)→DB":      "🔤 알라딘(영문→한글 음차) → 발행처명-주소 연결표",
+    "ALADIN(음차)→MOIS":    "🔤 알라딘(영문→한글 음차) → 행정안전부 API",
+    "FALLBACK":            "⚠️ 모든 경로 실패 (출판지 미상)",
+}
+
+EVAL_SOURCE_HEADERS: list[str] = ["260 발행지 출처"]
 
 _LEGACY_NA = "미생성"
 
@@ -266,6 +315,46 @@ def _056_eval_values(meta: dict | None, is_legacy: bool) -> dict[str, str]:
     return out
 
 
+def _perf_eval_values(meta: dict | None, is_legacy: bool) -> dict[str, str]:
+    """meta의 elapsed_ms/field_elapsed_ms/field_tokens를 EVAL_PERF_HEADERS 열로 옮긴다.
+
+    기존 I2M(레거시)은 원본 run_and_export()가 이런 계측치를 아예 안 만들어준다
+    (원본 코드를 못 건드리는 원칙상 새로 추가할 수 없다) — 056 채점 열과 동일하게
+    "미생성"으로 채운다.
+    """
+    out = {h: "" for h in EVAL_PERF_HEADERS}
+    if is_legacy:
+        for h in EVAL_PERF_HEADERS:
+            out[h] = _LEGACY_NA
+        return out
+
+    meta_all = meta or {}
+    elapsed_ms = meta_all.get("elapsed_ms")
+    if isinstance(elapsed_ms, (int, float)):
+        out["소요시간(초)"] = f"{elapsed_ms / 1000:.1f}"
+
+    field_ms = meta_all.get("field_elapsed_ms") or {}
+    field_tok = meta_all.get("field_tokens") or {}
+    for key, label in FIELD_STEP_LABELS.items():
+        if key in field_ms:
+            out[f"{label} 소요(ms)"] = str(field_ms[key])
+        if key in field_tok:
+            out[f"{label} 토큰"] = str(field_tok[key])
+    return out
+
+
+def _source_eval_values(meta: dict | None, is_legacy: bool) -> dict[str, str]:
+    """meta["bundle_source"]를 사람이 읽는 라벨로 바꿔 "260 발행지 출처" 열에 담는다.
+
+    기존 I2M은 260을 만드는 경로 자체가 원본 코드 안에 있어 이 진단값이 없으므로
+    "미생성"으로 채운다(056/성능 열과 동일 관례).
+    """
+    if is_legacy:
+        return {"260 발행지 출처": _LEGACY_NA}
+    source = (meta or {}).get("bundle_source", "")
+    return {"260 발행지 출처": _SOURCE_LABEL.get(source, source or "")}
+
+
 def _normalize_row(
     no: int,
     isbn: str,
@@ -278,6 +367,8 @@ def _normalize_row(
     for h in FIXED_HEADERS:
         row.setdefault(h, "")
     row.update(_056_eval_values(meta, is_legacy))
+    row.update(_perf_eval_values(meta, is_legacy))
+    row.update(_source_eval_values(meta, is_legacy))
 
     if error or not (mrk_text or "").strip():
         return row
@@ -324,7 +415,7 @@ def _normalize_row(
 
 
 def _build_dataframe(rows: list[dict[str, str]]) -> pd.DataFrame:
-    base_headers = FIXED_HEADERS + EVAL_056_HEADERS
+    base_headers = FIXED_HEADERS + EVAL_056_HEADERS + EVAL_PERF_HEADERS + EVAL_SOURCE_HEADERS
     seen = set(base_headers)
     dynamic_cols: list[str] = []
     for row in rows:
@@ -353,6 +444,13 @@ _META_KEEP_KEYS = {
     "kdc_candidates", "kdc_low_confidence", "kdc_margin_ratio",
     "kdc_edition", "kdc_reason", "kdc_model_version", "kdc_input_presence",
     "tag_056", "tag_653", "aladin_title", "category_name",
+    # 소요시간·토큰(전체/필드별) — 원래 이 목록에 빠져 있어서 체크포인트에서 이어받은
+    # (resume) 행은 CSV의 GPT호출/GPT토큰/소요시간/필드별 열이 전부 비어 나오는
+    # 버그가 있었다. 새로 추가한 필드별 계측(app.py의 field_elapsed_ms/field_tokens)도
+    # 같은 문제를 겪지 않게 처음부터 포함해둔다.
+    "gpt_called", "token_usage", "elapsed_ms", "field_elapsed_ms", "field_tokens",
+    # 260 발행지가 어느 경로로 확정됐는지(ISBN 접두표/KPIPA/알라딘/행안부/폴백).
+    "bundle_source",
 }
 
 

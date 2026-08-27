@@ -340,6 +340,25 @@ def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
     """
     start_time = time.perf_counter()
     token_tracker.clear()
+    # 필드 단위 소요시간·토큰 — 평가시스템(pages/3_평가시스템.py)이 ISBN 전체 합계 말고
+    # 041/245/260/300/653처럼 필드별로도 보고 싶어해서 추가했다. _run_conversion()이
+    # 필드를 순서대로 한 번씩만 호출하는 구조라 각 호출을 _step()으로 감싸 시간을
+    # 재고, token_tracker 누적값의 호출 전후 차이만 구하면 된다 — 041/300/653/700
+    # 등 GPT를 쓰는 필드 모듈 자체는 하나도 손대지 않는다.
+    field_elapsed_ms: dict[str, int] = {}
+    field_tokens: dict[str, int] = {}
+
+    def _step(name: str, fn, *args, **kwargs):
+        """호출 1건의 시간·토큰을 재서 name 키에 더한다(덮어쓰지 않음) — 056처럼
+        한 필드가 내부적으로 여러 호출(KPIPA 조회 + 모델 추론)로 나뉠 때도
+        _step을 두 번 불러 같은 이름에 누적하면 된다."""
+        _t0 = time.perf_counter()
+        _tok0 = token_tracker.get_total()["total_tokens"]
+        result = fn(*args, **kwargs)
+        field_elapsed_ms[name] = field_elapsed_ms.get(name, 0) + round((time.perf_counter() - _t0) * 1000)
+        field_tokens[name] = field_tokens.get(name, 0) + (token_tracker.get_total()["total_tokens"] - _tok0)
+        return result
+
     try:
         isbn = req.isbn.strip().replace("-", "")
         item, aladin_err = get_aladin_item_by_isbn(isbn, secrets)
@@ -373,17 +392,18 @@ def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
                 builder.rec.add_field(field)
 
         # ── 020 ──────────────────────────────────────────────
-        tags_020 = build_020_fields(item, isbn, nlk_cert_key=secrets.get("NLK_CERT_KEY", ""))
+        tags_020 = _step("020", build_020_fields, item, isbn, nlk_cert_key=secrets.get("NLK_CERT_KEY", ""))
         for t in tags_020:
             _add(t)
 
         # ── 490/830 (총서) ─────────────────────────────────────
-        tag_490, tag_830 = build_490_830(item)
+        tag_490, tag_830 = _step("490_830", build_490_830, item)
         _add(tag_490)
         _add(tag_830)
 
         # ── 041/546 ──────────────────────────────────────────
-        tag_041, tag_546, orig_title_041 = build_041_546(
+        tag_041, tag_546, orig_title_041 = _step(
+            "041_546", build_041_546,
             item, detail={},
             openai_client=openai_client,
             model=settings.openai_model_041,
@@ -392,7 +412,8 @@ def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
         _add(LangFieldBuilder.as_mrk_546(tag_546))
 
         # ── 245/246/900 계열 ────────────────────────────────
-        f245_ctx = build_245_family(
+        f245_ctx = _step(
+            "245", build_245_family,
             item, isbn,
             aladin_ttb_key=secrets.get("ALADIN_TTB_KEY", ""),
             nlk_api_key=secrets.get("NLK_CERT_KEY", ""),
@@ -401,7 +422,7 @@ def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
         )
         _add(f245_ctx["field_245"])
 
-        f5_result = build_500_700_710_900(f245_ctx, openai_client=openai_client)
+        f5_result = _step("246_500_700_710_900", build_500_700_710_900, f245_ctx, openai_client=openai_client)
         if f5_result["field_246"]:
             _add(f5_result["field_246"])
         for t in f5_result["fields_500"]:
@@ -416,7 +437,7 @@ def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
             _add(f245_ctx["field_940"])
 
         # ── 260 ──────────────────────────────────────────────
-        bundle = build_pub_location_bundle(isbn, publisher_raw, secrets)
+        bundle = _step("260", build_pub_location_bundle, isbn, publisher_raw, secrets)
         secondary_pub = bundle.get("secondary_publisher", "")
         tag_260, f_260 = build_260_field(
             place_display=bundle["place_display"],
@@ -440,7 +461,7 @@ def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
         _add(tag_008)
 
         # ── 300 ──────────────────────────────────────────────
-        tag_300, f_300, illus_diag = build_300_field(item, secrets=secrets)
+        tag_300, f_300, illus_diag = _step("300", build_300_field, item, secrets=secrets)
         all_tags.append(tag_300)
         if f_300:
             builder.rec.add_field(f_300)
@@ -450,7 +471,8 @@ def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
         _add(tag_950)
 
         # ── 653 ──────────────────────────────────────────────
-        tag_653, err_653 = build_653_field(
+        tag_653, err_653 = _step(
+            "653", build_653_field,
             item, isbn,
             openai_client=openai_client,
             model=settings.openai_model_653,
@@ -468,8 +490,9 @@ def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
         # 반드시 653 이후에 실행해야 하므로 위치는 그대로 둔다 — model21(v21)로
         # 바꾸면 653을 쓰지 않지만, 순서를 지켜도 손해가 없다.
         # 목차는 300 처리에서 이미 확보한 값을 재사용해 알라딘 재크롤링을 피한다.
-        _kpipa_raw = _kpipa_payload_for_056(isbn, secrets, settings)
-        tag_056, diag_056 = build_056_field(
+        _kpipa_raw = _step("056", _kpipa_payload_for_056, isbn, secrets, settings)
+        tag_056, diag_056 = _step(
+            "056", build_056_field,
             item,
             tag_653=tag_653,
             toc_text=illus_diag.get("toc_text", ""),
@@ -540,6 +563,11 @@ def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
             "debug_lines": bundle.get("debug", []) + get_debug_lines(),
             "elapsed_ms": round((time.perf_counter() - start_time) * 1000),
             "token_usage": token_tracker.get_total(),
+            # 필드별 소요시간(ms)·토큰 — 키는 _step() 호출부에 준 이름 그대로:
+            # 020 / 490_830 / 041_546 / 245 / 246_500_700_710_900 / 260 / 300 / 653 / 056.
+            # GPT를 안 쓰는 필드(020/490_830/260/056)는 field_tokens 값이 항상 0이다.
+            "field_elapsed_ms": field_elapsed_ms,
+            "field_tokens": field_tokens,
         }
         # 이 변환에서 GPT 호출이 한 번이라도 성공했는지. 041/245/300/653은 모두
         # 호출 직후 token_tracker.add()를 하므로, 합계가 0이면 전부 실패했다는 뜻이다.
