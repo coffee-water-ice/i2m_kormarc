@@ -1,0 +1,1172 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>MRK 편집기 프로토타입</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --shell-bg:#0f1219;
+    --shell-bg2:#151925;
+    --sidebar-bg:#161a24;
+    --panel-bg:#1a1e2a;
+    --border-dark:#262c3b;
+    --text-light:#e7e9f0;
+    --text-dim:#8991a6;
+    --text-faint:#5c6379;
+
+    --accent-emerald:#2fa574;
+    --accent-emerald-bg:#12281f;
+    --accent-amber:#d9822b;
+    --accent-rose:#c9536f;
+
+    --card-bg:#ffffff;
+    --card-edge:#d8dbe4;
+    --ink:#1f2430;
+    --ink-dim:#6b7280;
+
+    --tag-blue:#1c4fa0;
+    --tag-blue-bg:#e7eefc;
+    --sf-rust:#a6501c;
+    --sf-rust-bg:#fbeee2;
+
+    --rail-control:#7c8494;
+    --rail-class:#7c4dd6;
+    --rail-title:#3b6fd1;
+    --rail-pub:#1f9e83;
+    --rail-note:#8a8f9c;
+    --rail-subject:#a15fc9;
+    --rail-added:#d9822b;
+    --rail-price:#2fa574;
+    --rail-series:#2f8fa5;
+
+    --font-ui:'IBM Plex Sans KR', -apple-system, sans-serif;
+    --font-mono:'IBM Plex Mono', ui-monospace, monospace;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;}
+  body{
+    font-family:var(--font-ui);
+    background:var(--shell-bg);
+    color:var(--text-light);
+    -webkit-font-smoothing:antialiased;
+  }
+  .app{
+    display:grid;
+    grid-template-columns:252px 1fr;
+    min-height:100vh;
+  }
+
+  /* ---------- Sidebar ---------- */
+  .sidebar{
+    background:var(--sidebar-bg);
+    border-right:1px solid var(--border-dark);
+    padding:20px 14px;
+    display:flex;
+    flex-direction:column;
+    gap:14px;
+  }
+  .sidebar-head{
+    font-size:12px;
+    letter-spacing:.06em;
+    color:var(--text-dim);
+    text-transform:uppercase;
+    padding:0 6px;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+  }
+  .sidebar-head span.count{
+    background:var(--panel-bg);
+    color:var(--text-dim);
+    border-radius:20px;
+    padding:1px 8px;
+    font-size:11px;
+  }
+  .history-list{display:flex;flex-direction:column;gap:6px;}
+  .history-item{
+    text-align:left;
+    background:transparent;
+    border:1px solid transparent;
+    border-radius:10px;
+    padding:10px 12px;
+    cursor:pointer;
+    color:var(--text-light);
+    display:flex;
+    flex-direction:column;
+    gap:3px;
+    transition:background .15s, border-color .15s;
+  }
+  .history-item:hover{background:var(--panel-bg);}
+  .history-item.active{
+    background:var(--panel-bg);
+    border-color:var(--border-dark);
+  }
+  .history-item.active::before{
+    content:"";
+  }
+  .hi-title{
+    font-size:13px;
+    font-weight:600;
+    line-height:1.35;
+    display:flex;
+    align-items:center;
+    gap:6px;
+  }
+  .hi-title .edited-dot{
+    width:6px;height:6px;border-radius:50%;
+    background:var(--accent-amber);
+    flex:none;
+  }
+  .hi-meta{
+    font-size:11px;
+    color:var(--text-faint);
+    font-family:var(--font-mono);
+  }
+  .sidebar-foot{
+    margin-top:auto;
+    font-size:11px;
+    color:var(--text-faint);
+    padding:10px 6px 0;
+    border-top:1px solid var(--border-dark);
+    line-height:1.6;
+  }
+
+  /* ---------- Main ---------- */
+  .main{padding:26px 32px 60px;max-width:1180px;}
+  .topbar{margin-bottom:18px;}
+  .isbn-row{
+    display:flex;
+    align-items:flex-end;
+    gap:10px;
+    margin-bottom:12px;
+  }
+  .isbn-field{display:flex;flex-direction:column;gap:6px;}
+  .isbn-field label{font-size:11px;color:var(--text-dim);letter-spacing:.04em;}
+  .isbn-field input{
+    font-family:var(--font-mono);
+    font-size:14px;
+    background:var(--panel-bg);
+    border:1px solid var(--border-dark);
+    color:var(--text-light);
+    border-radius:8px;
+    padding:9px 12px;
+    width:280px;
+  }
+  .btn-primary{
+    background:var(--accent-rose);
+    color:#fff;
+    border:none;
+    border-radius:8px;
+    padding:10px 18px;
+    font-size:13px;
+    font-weight:600;
+    cursor:pointer;
+  }
+  .status-banner{
+    display:inline-flex;
+    align-items:center;
+    gap:8px;
+    background:var(--accent-emerald-bg);
+    color:var(--accent-emerald);
+    border:1px solid #1f4a37;
+    border-radius:8px;
+    padding:8px 14px;
+    font-size:12.5px;
+  }
+
+  .editor-wrap{
+    display:grid;
+    grid-template-columns:1fr 300px;
+    gap:20px;
+    align-items:start;
+  }
+
+  /* ---------- Card ---------- */
+  .card{
+    background:var(--card-bg);
+    border-radius:12px;
+    box-shadow:0 20px 40px -18px rgba(0,0,0,.55);
+    overflow:hidden;
+  }
+  .card-toolbar{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    padding:14px 18px;
+    border-bottom:1px solid #eceef3;
+  }
+  .card-title{
+    font-size:13px;
+    font-weight:700;
+    color:var(--ink);
+  }
+  .card-title small{
+    display:block;
+    font-weight:400;
+    color:var(--ink-dim);
+    font-size:11px;
+    margin-top:2px;
+  }
+  .card-actions{display:flex;gap:6px;}
+  .card-actions button{
+    font-family:var(--font-ui);
+    font-size:12px;
+    background:#f3f4f8;
+    color:var(--ink);
+    border:1px solid #e2e4ec;
+    border-radius:7px;
+    padding:7px 11px;
+    cursor:pointer;
+  }
+  .card-actions button:hover{background:#e9ebf2;}
+  .card-actions button.mrc{color:var(--ink-dim);}
+  .card-actions button.raw-toggle{color:var(--tag-blue);border-color:#c9d8f5;background:#f0f4fd;}
+
+  .raw-panel{
+    padding:14px 18px 16px;
+    background:#fafbfd;
+    border-bottom:1px solid #eceef3;
+  }
+  .raw-panel p{
+    margin:0 0 8px;
+    font-size:11.5px;
+    color:var(--ink-dim);
+  }
+  .raw-panel textarea{
+    width:100%;
+    min-height:200px;
+    font-family:var(--font-mono);
+    font-size:12px;
+    line-height:1.6;
+    color:var(--ink);
+    background:#fff;
+    border:1px solid #e2e4ec;
+    border-radius:8px;
+    padding:10px 12px;
+    resize:vertical;
+  }
+  .raw-actions{display:flex;gap:8px;margin-top:8px;}
+  .raw-actions button{
+    font-family:var(--font-ui);
+    font-size:12px;
+    border-radius:7px;
+    padding:7px 12px;
+    cursor:pointer;
+    border:1px solid #e2e4ec;
+    background:#fff;
+    color:var(--ink);
+  }
+  .raw-actions button.primary{
+    background:var(--tag-blue);
+    border-color:var(--tag-blue);
+    color:#fff;
+  }
+
+  .field-rows{padding:6px 0 14px;}
+  .field-row{
+    position:relative;
+    display:flex;
+    align-items:flex-start;
+    gap:10px;
+    padding:7px 18px 7px 0;
+    font-family:var(--font-mono);
+    font-size:13px;
+    color:var(--ink);
+    border-left:3px solid var(--rail-color, transparent);
+    margin-left:0;
+  }
+  .field-row + .field-row{border-top:1px solid #f2f3f7;}
+  .field-row:hover{background:#fafbfd;}
+  .field-row.pulse{animation:pulseRow .9s ease;}
+  @keyframes pulseRow{
+    0%{background:#f2ecff;}
+    100%{background:transparent;}
+  }
+  .rail{width:0;}
+  .tag-badge{
+    position:relative;
+    flex:none;
+    margin-left:14px;
+    background:var(--tag-blue-bg);
+    color:var(--tag-blue);
+    font-weight:700;
+    font-size:12px;
+    border-radius:6px;
+    padding:3px 7px;
+    cursor:text;
+    outline:none;
+    border-bottom:1px dashed transparent;
+    min-width:1.6em;
+  }
+  .tag-badge:hover{border-bottom-color:#9db6e6;}
+  .tag-badge:focus{border-bottom-color:var(--tag-blue);background:#d9e5fb;}
+  .indicators{
+    flex:none;
+    display:flex;
+    gap:2px;
+    padding-top:3px;
+  }
+  .indicators span{
+    display:inline-block;
+    min-width:14px;
+    text-align:center;
+    color:var(--ink-dim);
+    outline:none;
+    border-bottom:1px dashed transparent;
+  }
+  .indicators span:focus{border-bottom-color:#c7cbd6;}
+  .subfields{
+    flex:1;
+    display:flex;
+    flex-wrap:wrap;
+    align-items:baseline;
+    gap:2px 0;
+    padding-top:3px;
+    line-height:1.7;
+  }
+  .sf{display:inline-flex;align-items:baseline;margin-right:2px;position:relative;}
+  .sf-code{
+    color:var(--sf-rust);
+    background:var(--sf-rust-bg);
+    border-radius:4px;
+    padding:0 4px;
+    font-size:11.5px;
+    font-weight:700;
+    margin-right:3px;
+    cursor:text;
+    outline:none;
+    border-bottom:1px dashed transparent;
+  }
+  .sf-code:hover{border-bottom-color:#d9a479;}
+  .sf-code:focus{border-bottom-color:var(--sf-rust);background:#f5dcc4;}
+  .sf-val{
+    outline:none;
+    border-bottom:1px dashed transparent;
+    padding:0 1px;
+  }
+  .sf-val:hover{border-bottom-color:#dfe2ea;}
+  .sf-val:focus{border-bottom-color:var(--tag-blue);background:#f5f8ff;}
+  .sf-trim{
+    position:relative;
+    display:inline-block;
+    width:14px;height:14px;
+    line-height:14px;
+    text-align:center;
+    font-size:10px;
+    color:var(--accent-amber);
+    background:#fbeed9;
+    border-radius:3px;
+    margin:0 3px;
+    cursor:pointer;
+    vertical-align:middle;
+  }
+  .sf-del{
+    opacity:0;
+    border:none;
+    background:none;
+    color:var(--accent-rose);
+    font-size:12px;
+    line-height:1;
+    padding:0 3px;
+    margin-left:1px;
+    cursor:pointer;
+    vertical-align:middle;
+    transition:opacity .1s;
+  }
+  .sf:hover .sf-del{opacity:1;}
+  .indicators span{caret-color:var(--tag-blue);}
+  .indicators span:empty::before{
+    content:"·";
+    color:#c7cbd6;
+  }
+
+  .control-val{
+    outline:none;
+    padding-top:3px;
+    color:var(--ink-dim);
+    border-bottom:1px dashed transparent;
+  }
+  .control-val:focus{border-bottom-color:var(--tag-blue);}
+
+  .warn-icon{
+    position:relative;
+    flex:none;
+    color:var(--accent-amber);
+    font-size:13px;
+    padding-top:3px;
+    cursor:default;
+  }
+  .row-actions{
+    flex:none;
+    opacity:0;
+    padding-top:2px;
+    transition:opacity .1s;
+  }
+  .field-row:hover .row-actions{opacity:1;}
+  .row-copy{
+    border:none;
+    background:none;
+    cursor:pointer;
+    color:var(--ink-dim);
+    font-size:13px;
+  }
+  .row-copy:hover{color:var(--tag-blue);}
+
+  /* tooltip */
+  [data-tooltip]{position:relative;}
+  [data-tooltip]:hover::after{
+    content:attr(data-tooltip);
+    position:absolute;
+    left:0;
+    top:calc(100% + 6px);
+    background:#1c1f2b;
+    color:#fff;
+    font-family:var(--font-ui);
+    font-size:11.5px;
+    line-height:1.4;
+    padding:6px 9px;
+    border-radius:6px;
+    white-space:nowrap;
+    z-index:20;
+    box-shadow:0 8px 18px rgba(0,0,0,.35);
+  }
+
+  /* ---------- Classification panel ---------- */
+  .class-panel{
+    background:var(--panel-bg);
+    border:1px solid var(--border-dark);
+    border-radius:12px;
+    padding:16px;
+    position:sticky;
+    top:20px;
+  }
+  .class-panel h3{
+    margin:0 0 4px;
+    font-size:13px;
+  }
+  .class-sub{
+    margin:0 0 12px;
+    font-size:11.5px;
+    color:var(--text-dim);
+  }
+  .class-bars{display:flex;flex-direction:column;gap:8px;margin-bottom:14px;}
+  .class-bar-row{font-size:11.5px;}
+  .class-bar-label{
+    display:flex;
+    justify-content:space-between;
+    color:var(--text-dim);
+    margin-bottom:3px;
+    font-family:var(--font-mono);
+  }
+  .class-bar-track{
+    height:6px;
+    background:#0f1219;
+    border-radius:4px;
+    overflow:hidden;
+  }
+  .class-bar-fill{
+    height:100%;
+    background:var(--rail-class);
+    border-radius:4px;
+  }
+  .class-radios{display:flex;flex-direction:column;gap:7px;margin-bottom:12px;}
+  .class-radio{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    font-size:12.5px;
+    cursor:pointer;
+    color:var(--text-light);
+  }
+  .class-apply{
+    font-size:11.5px;
+    color:var(--text-dim);
+    border-top:1px solid var(--border-dark);
+    padding-top:10px;
+  }
+  .class-apply code{
+    display:block;
+    margin-top:5px;
+    font-family:var(--font-mono);
+    color:var(--accent-emerald);
+    font-size:12px;
+  }
+
+  /* ---------- Toast ---------- */
+  .toast{
+    position:fixed;
+    bottom:24px;
+    left:50%;
+    transform:translateX(-50%) translateY(20px);
+    background:#1c1f2b;
+    color:#fff;
+    padding:10px 18px;
+    border-radius:8px;
+    font-size:12.5px;
+    box-shadow:0 12px 30px rgba(0,0,0,.4);
+    opacity:0;
+    pointer-events:none;
+    transition:opacity .2s, transform .2s;
+    z-index:50;
+  }
+  .toast.show{
+    opacity:1;
+    transform:translateX(-50%) translateY(0);
+  }
+
+  @media (max-width:900px){
+    .app{grid-template-columns:1fr;}
+    .sidebar{
+      flex-direction:row;
+      overflow-x:auto;
+      border-right:none;
+      border-bottom:1px solid var(--border-dark);
+    }
+    .editor-wrap{grid-template-columns:1fr;}
+    .class-panel{position:static;}
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <aside class="sidebar">
+    <div class="sidebar-head">변환 내역 <span class="count" id="histCount">0</span></div>
+    <div class="history-list" id="historyList"></div>
+    <div class="sidebar-foot">항목을 선택하면 편집 카드와<br>분류기호 패널이 함께 갱신됩니다.</div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <div class="isbn-row">
+        <div class="isbn-field">
+          <label>ISBN-13</label>
+          <input id="isbnInput" value="9791190406260">
+        </div>
+        <button class="btn-primary" id="convertBtn">변환 실행</button>
+      </div>
+      <div class="status-banner" id="statusBanner">● 변환 완료 · 소요시간 40.0초 · GPT 토큰 7,227개</div>
+    </div>
+
+    <section class="editor-wrap">
+      <div class="card">
+        <div class="card-toolbar">
+          <div class="card-title" id="cardTitle">MRK 편집<small>필드를 직접 클릭해서 값을 고칠 수 있어요</small></div>
+          <div class="card-actions">
+            <button class="raw-toggle" data-action="raw">⇄ 원본 텍스트</button>
+            <button data-action="copy">⧉ 전체 복사</button>
+            <button data-action="mrk">↓ .mrk</button>
+            <button class="mrc" data-action="mrc">↓ .mrc</button>
+          </div>
+        </div>
+        <div class="raw-panel" id="rawPanel" hidden>
+          <p>백엔드가 내려준 원본 MRK 텍스트예요. 여기서 직접 고친 뒤 아래 필드 편집 화면에 반영할 수 있어요.</p>
+          <textarea id="rawTextarea" spellcheck="false"></textarea>
+          <div class="raw-actions">
+            <button class="primary" id="applyRawBtn">구조화된 편집에 반영</button>
+            <button id="closeRawBtn">닫기</button>
+          </div>
+        </div>
+        <div class="field-rows" id="fieldRows"></div>
+      </div>
+
+      <aside class="class-panel">
+        <h3>056 KDC 분류기호</h3>
+        <p class="class-sub" id="classRatio"></p>
+        <div class="class-bars" id="classBars"></div>
+        <div class="class-radios" id="classRadios"></div>
+        <div class="class-apply">→ 적용될 값<code id="classApplyPreview"></code></div>
+      </aside>
+    </section>
+  </main>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+/* ---------------- Field metadata ---------------- */
+const TAG_META = {
+  '007':'자료유형 고정길이 부호',
+  '008':'부호화정보(발행년·언어 등 고정 항목)',
+  '020':'표준번호(ISBN)',
+  '041':'언어부호',
+  '056':'KDC 분류기호',
+  '245':'표제와 책임표시',
+  '246':'다른 표제',
+  '260':'발행사항 — 발행지·발행처·발행년',
+  '300':'형태사항 — 페이지·크기',
+  '500':'일반주기',
+  '546':'언어주기',
+  '653':'비통제 주제어',
+  '700':'부출표목 — 개인명',
+  '900':'부출표목(원어 표기)',
+  '950':'가격'
+};
+const RAIL_COLOR = {
+  '007':'var(--rail-control)','008':'var(--rail-control)','020':'var(--rail-control)','041':'var(--rail-control)',
+  '056':'var(--rail-class)',
+  '245':'var(--rail-title)','246':'var(--rail-title)',
+  '260':'var(--rail-pub)','300':'var(--rail-pub)',
+  '500':'var(--rail-note)','546':'var(--rail-note)',
+  '653':'var(--rail-subject)',
+  '700':'var(--rail-added)','900':'var(--rail-added)',
+  '950':'var(--rail-price)'
+};
+const REQUIRED = {
+  '245':['a'], '260':['a','b','c'], '300':['a'], '700':['a']
+};
+function isControlTag(tag){ return parseInt(tag,10) < 10; }
+
+/* ---------------- Generic MRK text parser ----------------
+   Turns raw backend output (like the .mrk text a FastAPI
+   endpoint would return) into the structured row objects
+   the editor renders. This is what makes "붙여넣기 → 구조화된
+   편집" possible instead of hand-authoring each record. */
+function parseMrkText(text){
+  const lines = text.split(/\r?\n/).map(l => l.replace(/\s+$/,'')).filter(l => l.trim().length>0);
+  const fields = [];
+  for(const line of lines){
+    const m = line.match(/^=(\d{3})\s{2}(.*)$/);
+    if(!m) continue;
+    const tag = m[1];
+    const rest = m[2];
+    if(isControlTag(tag)){
+      fields.push({tag, value: rest});
+      continue;
+    }
+    const ind1 = rest[0] ?? '\\';
+    const ind2 = rest[1] ?? '\\';
+    const sfPart = rest.slice(2);
+    const sf = [];
+    const re = /\$(.)([^$]*)/g;
+    let mm;
+    while((mm = re.exec(sfPart))){
+      sf.push([mm[1], mm[2]]);
+    }
+    fields.push({tag, ind:[ind1, ind2], sf});
+  }
+  return fields;
+}
+
+/* Raw MRK text exactly as the backend would emit it for this
+   ISBN — including the real-world inconsistencies (backslash
+   indicators, stray leading spaces after some $ codes) so the
+   parser and the "선행 공백" quick-fix are demonstrated on
+   real output rather than tidied-up sample data. */
+const RAW_SAMPLE_MRK = `=007  ta
+=008  260824s2026    ulk           000af kor
+=020  \\\\$a9791190406260$g03800:$c17000
+=041  1\\$akor$heng
+=056  \\\\$a84$26
+=245  00$a 셰익스피어 서문 /$d 새뮤얼 존슨 지음 ;$e 정정호 옮김
+=246  19$a Preface to Shakespeare
+=260  \\\\$a서울 :$b필요한책,$c2026
+=300  \\\\$a240 p. ;$c21 cm
+=500  \\\\$a 원저자명: Samuel Johnson
+=546  \\\\$a영어 원작을 한국어로 번역
+=653  \\\\$a영미문학비평$a18세기문학$a문학비평가$a보편적인간성
+=700  1\\$a Johnson, Samuel
+=700  1\\$a 정정호
+=900  10$a 존슨, 새뮤얼
+=950  0\\$b₩17000`;
+
+/* ---------------- Sample records ---------------- */
+const RECORDS = [
+{
+  isbn:'9791190406260', edited:false,
+  fields: parseMrkText(RAW_SAMPLE_MRK),
+  classRatio:'1순위가 2순위보다 6.62배 우세합니다.',
+  classCandidates:[
+    {code:'84', label:'84 · 문학', pct:85.7},
+    {code:'80', label:'80 · 문학', pct:12.9},
+    {code:'85', label:'85 · 문학', pct:0.2}
+  ],
+  classSelected:'84'
+},
+{
+  isbn:'9788932473921', edited:false,
+  fields:[
+    {tag:'007', value:'ta'},
+    {tag:'008', value:'260701s2026    ulk           000af kor'},
+    {tag:'020', ind:['\\','\\'], sf:[['a','9788932473921'],['g','03020']]},
+    {tag:'056', ind:['\\','\\'], sf:[['a','023'],['2','6']]},
+    {tag:'245', ind:['0','0'], sf:[['a','도서관을 위한 인공지능 /'],['d','김도서 지음']]},
+    {tag:'260', ind:['\\','\\'], sf:[['a','파주 :'],['b','책숲']]},
+    {tag:'300', ind:['\\','\\'], sf:[['a','312 p. ;'],['c','23 cm']]},
+    {tag:'653', ind:['\\','\\'], sf:[['a','문헌정보학'],['a','자동분류'],['a','메타데이터']]},
+    {tag:'700', ind:['1','\\'], sf:[['a','김도서']]},
+    {tag:'950', ind:['0','\\'], sf:[['b','₩22000']]}
+  ],
+  classRatio:'1순위가 2순위보다 2.10배 우세합니다.',
+  classCandidates:[
+    {code:'023', label:'023 · 문헌정보학', pct:58.4},
+    {code:'325', label:'325 · 경영학', pct:27.8},
+    {code:'004', label:'004 · 컴퓨터과학', pct:9.1}
+  ],
+  classSelected:'023'
+},
+{
+  isbn:'9791168412093', edited:false,
+  fields:[
+    {tag:'007', value:'ta'},
+    {tag:'008', value:'260512s2026    ulk           001kf kor'},
+    {tag:'020', ind:['\\','\\'], sf:[['a','9791168412093'],['g','77810']]},
+    {tag:'041', ind:['1','\\'], sf:[['a','kor'],['h','fre']]},
+    {tag:'056', ind:['\\','\\'], sf:[['a','863'],['2','6']]},
+    {tag:'245', ind:['0','0'], sf:[['a','작은 여우와 겨울 숲 /'],['d','클로에 뒤랑 글·그림 ;'],['e','한서영 옮김']]},
+    {tag:'246', ind:['1','9'], sf:[['a',"Le petit renard et la forêt d'hiver"]]},
+    {tag:'260', ind:['\\','\\'], sf:[['a','서울 :'],['b','달빛그림책']]},
+    {tag:'500', ind:['\\','\\'], sf:[['a','원저자명: Chloé Durand']]},
+    {tag:'700', ind:['1','\\'], sf:[['a','Durand, Chloé']]},
+    {tag:'700', ind:['1','\\'], sf:[['a','한서영']]},
+    {tag:'950', ind:['0','\\'], sf:[['b','₩14500']]}
+  ],
+  classRatio:'1순위가 2순위보다 3.4배 우세합니다.',
+  classCandidates:[
+    {code:'863', label:'863 · 프랑스 소설(아동)', pct:64.2},
+    {code:'808', label:'808 · 아동문학 일반', pct:18.9},
+    {code:'843', label:'843 · 프랑스 희곡', pct:3.1}
+  ],
+  classSelected:'863'
+}
+];
+
+let currentIndex = 0;
+
+/* ---------------- Rendering ---------------- */
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function fieldTitle(rec){
+  const f245 = rec.fields.find(f=>f.tag==='245');
+  if(!f245) return '(제목 없음)';
+  const a = f245.sf.find(s=>s[0]==='a');
+  return a ? a[1].trim().replace(/\s*\/\s*$/,'') : '(제목 없음)';
+}
+
+function renderHistory(){
+  const list = document.getElementById('historyList');
+  document.getElementById('histCount').textContent = RECORDS.length;
+  list.innerHTML = RECORDS.map((rec,i)=>`
+    <button class="history-item ${i===currentIndex?'active':''}" data-idx="${i}">
+      <div class="hi-title">${rec.edited?'<span class="edited-dot" data-tooltip="원본에서 수정됨"></span>':''}${escapeHtml(fieldTitle(rec))}</div>
+      <div class="hi-meta">${rec.isbn}</div>
+    </button>
+  `).join('');
+  list.querySelectorAll('.history-item').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      currentIndex = parseInt(btn.dataset.idx,10);
+      renderAll();
+    });
+  });
+}
+
+function renderRow(f){
+  if(isControlTag(f.tag)){
+    return `<div class="field-row control-field" data-tag="${f.tag}" style="--rail-color:${RAIL_COLOR[f.tag]||'var(--rail-control)'}">
+      <div class="tag-badge" contenteditable="true" tabindex="-1" spellcheck="false" data-tooltip="${TAG_META[f.tag]||''}">${f.tag}</div>
+      <div class="control-val" contenteditable="true" spellcheck="false">${escapeHtml(f.value)}</div>
+    </div>`;
+  }
+  const missing = (REQUIRED[f.tag]||[]).filter(code => !f.sf.some(s=>s[0]===code));
+  const warn = missing.length>0;
+  return `<div class="field-row ${warn?'has-warning':''}" data-tag="${f.tag}" style="--rail-color:${RAIL_COLOR[f.tag]||'transparent'}">
+    <div class="tag-badge" contenteditable="true" tabindex="-1" spellcheck="false" data-tooltip="${TAG_META[f.tag]||''}">${f.tag}</div>
+    <div class="indicators">
+      <span class="ind1" contenteditable="true">${f.ind[0]}</span>
+      <span class="ind2" contenteditable="true">${f.ind[1]}</span>
+    </div>
+    <div class="subfields">
+      ${f.sf.map(s=>{
+        const leadSpace = /^\s/.test(s[1]);
+        return `<span class="sf"><span class="sf-code" contenteditable="true" tabindex="-1" spellcheck="false">$${escapeHtml(s[0])}</span>${leadSpace?`<span class="sf-trim" data-tooltip="값 앞에 불필요한 공백이 있어요 — 클릭하면 제거">␣</span>`:''}<span class="sf-val" contenteditable="true" spellcheck="false">${escapeHtml(s[1])}</span><button class="sf-del" tabindex="-1" data-tooltip="이 서브필드 삭제">×</button></span>`;
+      }).join('')}
+    </div>
+    ${warn?`<div class="warn-icon" data-tooltip="필수 서브필드 누락: $${missing.join(', $')}">⚠</div>`:''}
+    <div class="row-actions"><button class="row-copy" tabindex="-1" title="이 필드 복사" data-copy-row="1">⧉</button></div>
+  </div>`;
+}
+
+function renderCard(){
+  const rec = RECORDS[currentIndex];
+  document.getElementById('fieldRows').innerHTML = rec.fields.map(renderRow).join('');
+  document.getElementById('isbnInput').value = rec.isbn;
+}
+
+function renderClassification(){
+  const rec = RECORDS[currentIndex];
+  document.getElementById('classRatio').textContent = rec.classRatio;
+
+  const maxPct = Math.max(...rec.classCandidates.map(c=>c.pct));
+  document.getElementById('classBars').innerHTML = rec.classCandidates.map(c=>`
+    <div class="class-bar-row">
+      <div class="class-bar-label"><span>${c.label}</span><span>${c.pct}%</span></div>
+      <div class="class-bar-track"><div class="class-bar-fill" style="width:${(c.pct/maxPct*100).toFixed(1)}%"></div></div>
+    </div>
+  `).join('');
+
+  document.getElementById('classRadios').innerHTML = rec.classCandidates.map(c=>`
+    <label class="class-radio">
+      <input type="radio" name="classPick" value="${c.code}" ${c.code===rec.classSelected?'checked':''}>
+      ${c.label}
+    </label>
+  `).join('');
+
+  document.querySelectorAll('input[name="classPick"]').forEach(r=>{
+    r.addEventListener('change', ()=>applyClassification(r.value));
+  });
+
+  updateClassPreview();
+}
+
+function updateClassPreview(){
+  const row = document.querySelector('.field-row[data-tag="056"]');
+  if(!row) return;
+  const codeVal = [...row.querySelectorAll('.sf')].map(sf=>{
+    const code = sf.querySelector('.sf-code').textContent.replace('$','');
+    const val = sf.querySelector('.sf-val').textContent;
+    return `$${code}${val}`;
+  }).join('');
+  document.getElementById('classApplyPreview').textContent = `=056  \\\\${codeVal}`;
+}
+
+function applyClassification(code){
+  const row = document.querySelector('.field-row[data-tag="056"]');
+  if(!row) return;
+  const aSpan = [...row.querySelectorAll('.sf')].find(sf=>sf.querySelector('.sf-code').textContent==='$a');
+  if(aSpan) aSpan.querySelector('.sf-val').textContent = code;
+  RECORDS[currentIndex].classSelected = code;
+  updateClassPreview();
+  row.classList.remove('pulse');
+  void row.offsetWidth;
+  row.classList.add('pulse');
+  row.scrollIntoView({behavior:'smooth', block:'center'});
+}
+
+/* ---------------- Serialize / export ---------------- */
+function serializeRow(row){
+  const tag = row.dataset.tag;
+  if(row.classList.contains('control-field')){
+    return `=${tag}  ${row.querySelector('.control-val').textContent.trim()}`;
+  }
+  const ind1 = row.querySelector('.ind1').textContent.trim() || '\\';
+  const ind2 = row.querySelector('.ind2').textContent.trim() || '\\';
+  const sfs = [...row.querySelectorAll('.sf')].map(sf=>{
+    const code = sf.querySelector('.sf-code').textContent.replace('$','');
+    const val = sf.querySelector('.sf-val').textContent;
+    return `$${code}${val}`;
+  }).join('');
+  return `=${tag}  ${ind1}${ind2}${sfs}`;
+}
+
+function serializeCard(){
+  return [...document.querySelectorAll('#fieldRows .field-row')].map(serializeRow).join('\n');
+}
+
+function showToast(msg){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(showToast._timer);
+  showToast._timer = setTimeout(()=>t.classList.remove('show'), 2400);
+}
+
+document.querySelectorAll('.card-actions [data-action]').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    const action = btn.dataset.action;
+    const rec = RECORDS[currentIndex];
+    if(action==='copy'){
+      navigator.clipboard.writeText(serializeCard());
+      showToast('레코드 전체를 복사했어요.');
+    } else if(action==='mrk'){
+      const blob = new Blob([serializeCard()], {type:'text/plain'});
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `${rec.isbn}.mrk`;
+      a.click();
+      showToast('.mrk 파일을 내려받았어요.');
+    } else if(action==='mrc'){
+      showToast('.mrc는 바이너리(ISO 2709) 포맷이라 서버 측 변환 로직이 붙어야 실제 다운로드가 가능해요 — 지금은 목업 버튼입니다.');
+    }
+  });
+});
+
+document.querySelector('[data-action="raw"]').addEventListener('click', ()=>{
+  const panel = document.getElementById('rawPanel');
+  if(panel.hasAttribute('hidden')){
+    document.getElementById('rawTextarea').value = serializeCard();
+    panel.removeAttribute('hidden');
+  } else {
+    panel.setAttribute('hidden','');
+  }
+});
+
+document.getElementById('applyRawBtn').addEventListener('click', ()=>{
+  const raw = document.getElementById('rawTextarea').value;
+  const parsed = parseMrkText(raw);
+  if(parsed.length===0){
+    showToast('파싱할 수 있는 필드를 찾지 못했어요. "=245  00$a..." 형식인지 확인해주세요.');
+    return;
+  }
+  RECORDS[currentIndex].fields = parsed;
+  RECORDS[currentIndex].edited = true;
+  renderCard();
+  renderHistory();
+  updateClassPreview();
+  document.getElementById('rawPanel').setAttribute('hidden','');
+  showToast('원본 텍스트를 구조화된 편집 화면에 반영했어요.');
+});
+
+document.getElementById('closeRawBtn').addEventListener('click', ()=>{
+  document.getElementById('rawPanel').setAttribute('hidden','');
+});
+
+document.getElementById('convertBtn').addEventListener('click', ()=>{
+  showToast('프로토타입에서는 변환 API가 연결되어 있지 않아요. 좌측 리스트에서 예시 레코드를 선택해보세요.');
+});
+
+/* ---------------- Caret helpers ---------------- */
+function focusElementEnd(el){
+  el.focus();
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  range.collapse(false);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+function focusElementStart(el){
+  el.focus();
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  range.collapse(true);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+function caretAtStart(el){
+  const sel = window.getSelection();
+  if(!sel.rangeCount) return false;
+  const range = sel.getRangeAt(0);
+  if(!range.collapsed) return false;
+  const preRange = document.createRange();
+  preRange.selectNodeContents(el);
+  preRange.setEnd(range.startContainer, range.startOffset);
+  return preRange.toString().length === 0;
+}
+
+/* ---------------- Indicator input ----------------
+   Space = blank indicator (shown as \, matching mrk
+   convention). Any other single alphanumeric overwrites
+   the box and auto-advances to the next stop. */
+function handleIndicatorKey(e, el){
+  const key = e.key;
+  if(key==='Tab' || key==='Shift' || key.startsWith('Arrow') || key==='Enter') return;
+  if(key===' '){
+    e.preventDefault();
+    el.textContent = '\\';
+    advanceFromIndicator(el);
+    return;
+  }
+  if(key==='Backspace' || key==='Delete'){
+    e.preventDefault();
+    el.textContent = '\\';
+    return;
+  }
+  if(/^[0-9a-zA-Z]$/.test(key) && !e.altKey && !e.ctrlKey && !e.metaKey){
+    e.preventDefault();
+    el.textContent = key;
+    advanceFromIndicator(el);
+    return;
+  }
+  if(key.length===1) e.preventDefault();
+}
+function advanceFromIndicator(el){
+  if(el.classList.contains('ind1')){
+    const ind2 = el.parentElement.querySelector('.ind2');
+    if(ind2){ focusElementEnd(ind2); return; }
+  }
+  const row = el.closest('.field-row');
+  const firstSf = row.querySelector('.sf-val');
+  if(firstSf) focusElementStart(firstSf);
+}
+
+/* ---------------- Subfield input ----------------
+   Alt+letter inserts a new $x delimiter at the caret,
+   splitting the current value there (like Connexion's
+   delimiter shortcut). Backspace at the very start of a
+   subfield deletes that subfield and steps back into the
+   previous one. */
+function handleSubfieldKey(e, el){
+  if(e.altKey && !e.ctrlKey && !e.metaKey && /^[a-zA-Z0-9]$/.test(e.key)){
+    e.preventDefault();
+    insertSubfieldAtCaret(el, e.key.toLowerCase());
+    return;
+  }
+  if(e.key==='Backspace' && caretAtStart(el)){
+    e.preventDefault();
+    deleteSubfield(el);
+  }
+}
+function insertSubfieldAtCaret(el, code){
+  const sel = window.getSelection();
+  const range = sel.getRangeAt(0);
+  const preRange = document.createRange();
+  preRange.selectNodeContents(el);
+  preRange.setEnd(range.startContainer, range.startOffset);
+  const caretOffset = preRange.toString().length;
+  const fullText = el.textContent;
+  const leftText = fullText.slice(0, caretOffset);
+  const rightText = fullText.slice(caretOffset);
+  el.textContent = leftText;
+
+  const sfSpan = document.createElement('span');
+  sfSpan.className = 'sf';
+  sfSpan.innerHTML = `<span class="sf-code" contenteditable="true" tabindex="-1" spellcheck="false">$${escapeHtml(code)}</span><span class="sf-val" contenteditable="true" spellcheck="false">${escapeHtml(rightText)}</span><button class="sf-del" tabindex="-1" data-tooltip="이 서브필드 삭제">×</button>`;
+  el.closest('.sf').after(sfSpan);
+
+  const newVal = sfSpan.querySelector('.sf-val');
+  focusElementStart(newVal);
+  recomputeRowWarning(el.closest('.field-row'));
+}
+function deleteSubfield(el){
+  const row = el.closest('.field-row');
+  const sfWrapper = el.closest('.sf');
+  const allSf = [...row.querySelectorAll('.sf')];
+  if(allSf.length <= 1){
+    el.textContent = '';
+    return;
+  }
+  const idx = allSf.indexOf(sfWrapper);
+  const prevWrapper = allSf[idx-1];
+  sfWrapper.remove();
+  if(prevWrapper){
+    focusElementEnd(prevWrapper.querySelector('.sf-val'));
+  } else {
+    const ind2 = row.querySelector('.ind2');
+    if(ind2) focusElementEnd(ind2);
+  }
+  recomputeRowWarning(row);
+}
+function recomputeRowWarning(row){
+  const tag = row.dataset.tag;
+  const required = REQUIRED[tag];
+  let warnEl = row.querySelector('.warn-icon');
+  if(!required || required.length===0){
+    if(warnEl) warnEl.remove();
+    row.classList.remove('has-warning');
+    return;
+  }
+  const codes = [...row.querySelectorAll('.sf-code')].map(c=>c.textContent.replace('$',''));
+  const missing = required.filter(c=>!codes.includes(c));
+  if(missing.length){
+    if(!warnEl){
+      warnEl = document.createElement('div');
+      warnEl.className = 'warn-icon';
+      row.insertBefore(warnEl, row.querySelector('.row-actions'));
+    }
+    warnEl.setAttribute('data-tooltip', `필수 서브필드 누락: $${missing.join(', $')}`);
+    warnEl.textContent = '⚠';
+    row.classList.add('has-warning');
+  } else {
+    if(warnEl) warnEl.remove();
+    row.classList.remove('has-warning');
+  }
+}
+
+/* ---------------- Tag & subfield-code direct editing ----------------
+   Tag badges (245, 700 ...) and subfield-code chips ($a, $d ...)
+   are contenteditable too. We sanitize on 'input' rather than
+   blocking every keystroke so paste/IME still behaves — digits
+   only for the tag (max 3), a single character after $ for the
+   code — then keep the row's rail color / tooltip / validation
+   in sync with whatever the person typed. */
+function handleTagInput(el){
+  const clean = el.textContent.replace(/[^0-9]/g,'').slice(0,3);
+  if(clean !== el.textContent){ el.textContent = clean; focusElementEnd(el); }
+  const row = el.closest('.field-row');
+  row.dataset.tag = clean;
+  el.setAttribute('data-tooltip', TAG_META[clean] || '');
+  row.style.setProperty('--rail-color', RAIL_COLOR[clean] || (row.classList.contains('control-field') ? 'var(--rail-control)' : 'transparent'));
+  recomputeRowWarning(row);
+}
+function handleSfCodeInput(el){
+  const raw = el.textContent.replace(/^\$/,'');
+  const clean = '$' + raw.replace(/[^0-9a-zA-Z]/g,'').slice(0,1);
+  if(clean !== el.textContent){ el.textContent = clean; focusElementEnd(el); }
+  recomputeRowWarning(el.closest('.field-row'));
+}
+
+/* ---------------- Delegated listeners (survive re-render) ---------------- */
+const fieldRowsEl = document.getElementById('fieldRows');
+
+/* ---------------- Enter = jump to next field ----------------
+   Any editable spot (indicator, code, value, control field) —
+   Enter moves down to the start of the next field row instead
+   of inserting a line break; Shift+Enter moves to the previous
+   row. This lets someone key through a whole record top to
+   bottom without reaching for the mouse. */
+function navigateRow(el, dir){
+  const row = el.closest('.field-row');
+  const rows = [...fieldRowsEl.querySelectorAll('.field-row')];
+  const idx = rows.indexOf(row);
+  const target = rows[idx + dir];
+  if(!target) return;
+  if(target.classList.contains('control-field')){
+    focusElementEnd(target.querySelector('.control-val'));
+  } else {
+    focusElementStart(target.querySelector('.ind1'));
+  }
+}
+
+fieldRowsEl.addEventListener('keydown', (e)=>{
+  const t = e.target;
+  if(e.key==='Enter'){
+    e.preventDefault();
+    navigateRow(t, e.shiftKey ? -1 : 1);
+    return;
+  }
+  if(t.classList.contains('ind1') || t.classList.contains('ind2')){
+    handleIndicatorKey(e, t);
+  } else if(t.classList.contains('sf-val')){
+    handleSubfieldKey(e, t);
+  }
+});
+
+fieldRowsEl.addEventListener('input', (e)=>{
+  const t = e.target;
+  if(t.classList.contains('tag-badge')) handleTagInput(t);
+  else if(t.classList.contains('sf-code')) handleSfCodeInput(t);
+});
+
+fieldRowsEl.addEventListener('click', (e)=>{
+  if(e.target.classList.contains('row-copy')){
+    const row = e.target.closest('.field-row');
+    navigator.clipboard.writeText(serializeRow(row));
+    showToast('해당 필드를 복사했어요.');
+    return;
+  }
+  if(e.target.classList.contains('sf-trim')){
+    const valSpan = e.target.nextElementSibling;
+    valSpan.textContent = valSpan.textContent.replace(/^\s+/,'');
+    e.target.remove();
+    showToast('앞 공백을 제거했어요.');
+    return;
+  }
+  if(e.target.classList.contains('sf-del')){
+    const valSpan = e.target.previousElementSibling;
+    deleteSubfield(valSpan);
+  }
+});
+
+function renderAll(){
+  renderHistory();
+  renderCard();
+  renderClassification();
+}
+renderAll();
+</script>
+</body>
+</html>
