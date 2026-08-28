@@ -51,6 +51,7 @@ from pydantic import BaseModel, Field
 from core.config import Settings, get_settings, load_streamlit_secrets_into_env
 from core.debug_log import clear_debug_lines, dbg_err, get_debug_lines
 from core import llm_health, token_tracker
+from pymarc import Record
 from core.marc_builder import MarcBuilder, kormarc_tag_to_mrk, mrk_str_to_field
 from core.fields.marc_007_008 import build_007_field, build_008_field
 from core.fields.marc_020_950 import build_020_fields, build_950_field
@@ -222,6 +223,18 @@ class FeedbackResult(BaseModel):
 class KpipaResult(BaseModel):
     isbn:  str
     data:  dict
+    error: Optional[str] = None
+
+
+class MrkToMarcRequest(BaseModel):
+    mrk_text: str = Field(
+        ...,
+        description="=245  00$a... 형식의 mrk 텍스트(여러 줄). 편집기에서 사람이 고친 내용도 그대로 반영된다.",
+    )
+
+
+class MrkToMarcResult(BaseModel):
+    marc_bytes_b64: str
     error: Optional[str] = None
 
 
@@ -651,6 +664,45 @@ async def convert_batch(req: BatchRequest):
     secrets = _settings_to_secrets(get_settings())
     results = [_run_conversion(job, secrets) for job in req.jobs]
     return BatchResult(results=results)
+
+
+@app.post("/api/mrk-to-marc", response_model=MrkToMarcResult, tags=["MARC 변환"])
+async def mrk_to_marc(req: MrkToMarcRequest):
+    """
+    mrk 텍스트를 진짜 바이너리 MARC(ISO 2709)로 (다시) 인코딩한다.
+
+    /api/convert가 변환 시점에 함께 내려주는 marc_bytes_b64는 그 시점 그대로라서,
+    이후 편집기(React 사서 편집 등)에서 사람이 고친 내용을 반영 못 한다 — 이
+    엔드포인트는 "지금 화면에 있는 mrk 텍스트 그대로"를 인코딩해서 그 간극을 메운다.
+    새로 짜지 않고 core/marc_builder.mrk_str_to_field(변환 파이프라인이 이미 쓰고
+    있는 mrk 한 줄 → pymarc.Field 파서)와 pymarc.Record.as_marc()(리더·디렉터리
+    계산까지 다 해주는 표준 인코더)를 그대로 재사용한다.
+
+    한 줄이라도 파싱이 안 되면(예: 편집 중이라 형식이 아직 안 맞는 줄) 그 줄만
+    건너뛰고 나머지로 레코드를 만든다 — 통째로 실패시키지 않되, 건너뛴 줄이 있으면
+    error에 어떤 줄인지 남겨서 알 수 있게 한다.
+    """
+    rec = Record(to_unicode=True, force_utf8=True)
+    skipped: list[str] = []
+    for line in req.mrk_text.splitlines():
+        if not line.strip():
+            continue
+        field = mrk_str_to_field(line)
+        if field is None:
+            skipped.append(line.strip())
+            continue
+        rec.add_field(field)
+
+    if not rec.get_fields():
+        raise HTTPException(status_code=400, detail="유효한 필드를 하나도 인식하지 못했습니다.")
+
+    marc_bytes = rec.as_marc()
+    error = (
+        f"{len(skipped)}개 줄을 형식을 인식하지 못해 건너뛰었습니다: " + "; ".join(skipped[:5])
+        if skipped
+        else None
+    )
+    return MrkToMarcResult(marc_bytes_b64=base64.b64encode(marc_bytes).decode(), error=error)
 
 
 @app.get("/api/kpipa/{isbn}", response_model=KpipaResult, tags=["KPIPA"])
