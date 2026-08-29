@@ -1,18 +1,25 @@
 # HuggingFace Space(Docker SDK)용 이미지.
 #
-# 이 앱은 FastAPI 백엔드와 Streamlit 프론트 두 프로세스로 되어 있는데, Space는
-# 컨테이너 하나만 띄운다. 그래서 한 컨테이너 안에서 uvicorn(내부 8000)과
-# streamlit(공개 7860)을 함께 돌린다. api_client.py가 백엔드 주소를 못 찾으면
-# localhost:8000으로 폴백하므로 애플리케이션 코드는 손대지 않는다.
+# 이 앱은 FastAPI 백엔드·Streamlit 프론트·React 프론트(정적 빌드) 세 갈래로
+# 되어 있는데, Space는 컨테이너 하나·공개 포트 하나(7860)만 준다. 그래서 한
+# 컨테이너 안에서 uvicorn(내부 8000)·streamlit(내부 7861)을 띄우고, nginx가
+# 공개 포트를 받아 /api→FastAPI, /app→React 정적 빌드(react_dist/), 나머지→
+# 스트림릿으로 나눠준다(nginx.conf·start.sh 참고). api_client.py가 백엔드
+# 주소를 못 찾으면 localhost:8000으로 폴백하므로 애플리케이션 코드는 손대지 않는다.
 #
-# 056 모델(1.28GB)은 이미지에 넣지 않는다. 실행 시 HF Hub 비공개 저장소에서
-# 받아 캐시한다 — KDC_MODEL_DIR과 HF_TOKEN을 Space Secrets로 주입할 것.
+# 056 모델(1.28GB)은 빌드 시점에 HF Hub 비공개 저장소에서 받아 이미지에 넣어둔다
+# (아래 "056 모델을 이미지에 포함시킨다" 절 참고) — 실행 중 재다운로드가 아니라
+# 빌드 때 한 번만 받는다. HF_TOKEN은 빌드용 Secret으로, 런타임에도 최신 리비전
+# 확인용으로 한 번 더 쓰인다(KDC_MODEL_DIR와 함께 Space Secrets로 주입).
 
 FROM python:3.11-slim
 
-# git: huggingface_hub이 일부 경로에서 사용. curl: 헬스체크용.
+# git: huggingface_hub이 일부 경로에서 사용. curl: 헬스체크용. nginx: 공개 포트
+# 하나(7860)를 받아서 /app(React)·/api(FastAPI)·나머지(스트림릿)로 나눠주는 용도
+# (nginx.conf 참고) — apt로 설치되는 mime.types 등 기본 파일만 그대로 쓰고,
+# 실행 설정 자체는 우리 nginx.conf를 -c로 직접 지정해서 띄운다(start.sh).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git curl \
+    && apt-get install -y --no-install-recommends git curl nginx \
     && rm -rf /var/lib/apt/lists/*
 
 # Space는 UID 1000으로 실행된다. root로 만든 파일에는 쓸 수 없으므로

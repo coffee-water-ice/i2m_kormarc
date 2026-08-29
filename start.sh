@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# HF Space 컨테이너 기동 스크립트 — 백엔드와 프론트를 한 컨테이너에서 함께 띄운다.
+# HF Space 컨테이너 기동 스크립트 — 백엔드·스트림릿·React를 한 컨테이너에서
+# 함께 띄운다. 공개 포트(7860)는 nginx가 받고, uvicorn·streamlit은 내부 전용
+# 포트로 물러난다(nginx.conf 참고).
 set -euo pipefail
 
 # 2025년 원본 코드가 st.secrets로 읽는 키들을 secrets.toml로 만들어 둔다.
@@ -26,23 +28,35 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 
-# 백엔드가 죽으면 컨테이너도 함께 내려가도록 한다. 그대로 두면 프론트만 살아남아
-# 모든 변환이 실패하는 상태로 서비스된다.
+# 스트림릿도 이제 내부 전용(7861)이다 — 공개 포트(7860)는 nginx가 받아서
+# /app(React)·/api(FastAPI)·나머지(이 스트림릿)로 나눠준다(nginx.conf 참고).
+# 백그라운드로 띄우는 이유: 이 스크립트의 마지막 프로세스(=공개 포트를 실제로
+# 붙잡는 프로세스)는 nginx여야 하기 때문이다.
+streamlit run streamlit_app.py \
+  --server.port 7861 \
+  --server.address 127.0.0.1 \
+  --server.headless true \
+  --browser.gatherUsageStats false &
+STREAMLIT_PID=$!
+
+# 백엔드나 스트림릿 둘 중 하나라도 죽으면 컨테이너를 내린다. 그대로 두면
+# nginx만 살아서 절반 죽은 상태(예: 스트림릿만 죽어도 /api는 계속 응답)로
+# 서비스되거나, 반대로 nginx가 계속 502를 돌려주는 상태가 된다.
 #
 # 서브셸 안에서 wait는 쓸 수 없다 — wait는 자기 자식만 기다릴 수 있는데
-# uvicorn은 부모 셸의 자식이라 "pid N is not a child of this shell"로 실패한다
-# (첫 배포 로그에서 실제로 확인). kill -0 폴링은 그 제약을 받지 않는다.
+# uvicorn/streamlit은 부모 셸의 자식이라 "pid N is not a child of this shell"로
+# 실패한다(첫 배포 로그에서 실제로 확인). kill -0 폴링은 그 제약을 받지 않는다.
 (
-  while kill -0 "$BACKEND_PID" 2>/dev/null; do
+  while kill -0 "$BACKEND_PID" 2>/dev/null && kill -0 "$STREAMLIT_PID" 2>/dev/null; do
     sleep 5
   done
-  echo "[start] 백엔드 종료 — 컨테이너를 내린다" >&2
+  echo "[start] 백엔드 또는 스트림릿 종료 — 컨테이너를 내린다" >&2
   kill -TERM 1
 ) &
 
-# Space는 7860 포트를 외부에 노출한다.
-exec streamlit run streamlit_app.py \
-  --server.port 7860 \
-  --server.address 0.0.0.0 \
-  --server.headless true \
-  --browser.gatherUsageStats false
+# nginx가 쓸 임시 디렉터리(nginx.conf의 *_temp_path) — 보통 nginx가 알아서
+# 만들지만, 혹시 몰라 미리 만들어둔다(/tmp라 권한 문제 없음).
+mkdir -p /tmp/nginx-client-body /tmp/nginx-proxy /tmp/nginx-fastcgi /tmp/nginx-uwsgi /tmp/nginx-scgi
+
+# Space는 7860 포트를 외부에 노출한다 — nginx가 그 창구다.
+exec nginx -c "$(pwd)/nginx.conf" -g 'daemon off;'
