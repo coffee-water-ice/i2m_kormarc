@@ -22,6 +22,13 @@ pages/3_평가시스템.py
     임포트해서 그대로 재사용한다. 경로 이원화(로컬 원본 우선 → 저장소 내 사본 폴백) 규칙은
     2_2025_I2M.py와 동일하되, sys.modules 키 이름을 다르게 써서(legacy_2025_code_eval)
     2_2025_I2M.py와 동시에 열려도 서로 충돌하지 않게 한다.
+  - 기존 I2M의 소요시간·토큰 계측: run_and_export() 호출은 _run_batch()에서 바깥으로
+    time.perf_counter()로 감싸 전체 소요시간을 잰다. 토큰은 원본이 집계 자체를 안 해서
+    이 방법으로는 못 얻는데, 대신 모듈을 불러온 직후 그 안의 OpenAI 클라이언트 전역
+    변수(client/_client, 딱 2개뿐 — _get_legacy_module() 참고)를 "실제 호출은 그대로
+    전달하되 usage만 옆에서 기록하는" 대리자(_SpyOpenAIClient)로 바꿔치기해서 얻는다.
+    이 두 방법 다 원본 텍스트는 한 글자도 안 고친다 — 모듈 네임스페이스의 이름 몇 개를
+    런타임에 다른 객체로 가리키게 할 뿐이다.
 - run_and_export()는 preview_in_streamlit=False로 호출해도 내부 곳곳(generate_all_oneclick
   등)에서 st.write/st.warning/st.error/st.expander 같은 디버그 출력을 직접 그린다(원본
   코드라 고칠 수 없음). ISBN 200개를 그대로 두면 화면이 그 출력으로 뒤덮이므로, 매 ISBN
@@ -39,14 +46,22 @@ CSV 컬럼 구성:
 - 위 33개 뒤에 056 채점 전용 컬럼 10개(EVAL_056_HEADERS)를 붙인다. 2·3순위 후보, 1·2위
   확률과 그 비율, 입력 결손(653/목차/책소개) 여부로, 056 채점기준표(공통_056 시트)의
   R~Y열에 대응한다. 이 값들은 MRK 문자열에는 남지 않고 백엔드 응답 meta에만 있어서
-  체크포인트에 meta를 함께 저장한다. 기존 I2M은 2·3순위가 원리적으로 없어 "미생성".
+  체크포인트에 meta를 함께 저장한다. 기존 I2M은 2·3순위가 원리적으로 없어 "미생성"이지만,
+  같은 컬럼군의 "GPT호출(1/0)"·"GPT토큰"만은 예외다 — _SpyOpenAIClient가 기록한 실제
+  토큰 사용량(meta["token_usage"])을 고도화와 동일한 키로 넘겨주므로, 이 함수(코드
+  수정 없이) 그대로 채워진다.
 - 그 뒤에 소요시간·토큰 컬럼 19개(EVAL_PERF_HEADERS)를 붙인다. ISBN 전체 소요시간 1개 +
   app.py가 필드를 처리하는 9단계(020/490·830/041·546/245/246·500·700·710·900/260/300/
   653/056) 각각의 소요시간(ms)·토큰 2개씩. GPT를 안 쓰는 필드는 토큰이 항상 0이다.
 - 마지막에 "260 발행지 출처"(EVAL_SOURCE_HEADERS) 1개 — 260 $a가 ISBN 접두-발행지
   연결표/KPIPA·알라딘·행안부 API/최종 폴백 중 어느 경로로 확정됐는지. pages/1의
   _SOURCE_LABEL과 같은 매핑.
-- 위 세 그룹(056·성능·발행지 출처) 전부 기존 I2M은 원본 코드에 해당 진단값이 없어 "미생성".
+- 위 세 그룹(056·성능·발행지 출처) 대부분은 기존 I2M이 원본 코드에 해당 진단값이 없어
+  "미생성"이다. 예외 둘: "소요시간(초)"는 _run_batch()가 run_and_export() 호출을 원본
+  밖에서 time.perf_counter()로 감싸 잰 값(meta["eval_elapsed_sec"]), "GPT호출(1/0)"·
+  "GPT토큰"은 _SpyOpenAIClient가 실제 호출을 옆에서 기록한 값(meta["token_usage"])이다
+  — 둘 다 원본 텍스트는 안 건드리고 얻는다. 필드별 시간·토큰(EVAL_PERF_HEADERS의 나머지
+  18개)만은 원본이 필드를 함수로 안 나눠놔서 이 방식으로도 얻을 수 없다.
 - "식별기호 삭제 + 정규화": MRK의 "$a"/"$b" 같은 서브필드 식별기호는 컬럼 이름으로 흡수되고
   셀 값에는 남지 않는다. 같은 서브필드가 한 필드 안에서 반복되면 ", "로, 같은 태그가 필드
   자체로 반복되면(700/710/653 등 다권/다저자) " ; "로 이어붙인다. 020만 예외적으로 반복
@@ -78,6 +93,7 @@ import json
 import os
 import re
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -318,14 +334,20 @@ def _056_eval_values(meta: dict | None, is_legacy: bool) -> dict[str, str]:
 def _perf_eval_values(meta: dict | None, is_legacy: bool) -> dict[str, str]:
     """meta의 elapsed_ms/field_elapsed_ms/field_tokens를 EVAL_PERF_HEADERS 열로 옮긴다.
 
-    기존 I2M(레거시)은 원본 run_and_export()가 이런 계측치를 아예 안 만들어준다
-    (원본 코드를 못 건드리는 원칙상 새로 추가할 수 없다) — 056 채점 열과 동일하게
-    "미생성"으로 채운다.
+    기존 I2M(레거시)은 원본 run_and_export()가 필드별 시간·토큰 계측치를 아예
+    안 만들어준다(원본 코드를 못 건드리는 원칙상 내부에 계측을 넣을 수 없다) —
+    그 18개 열은 056 채점 열과 동일하게 "미생성"으로 채운다. 다만 "소요시간(초)"
+    하나만은 _run_batch()가 run_and_export() 호출을 바깥에서 감싸 잰 값
+    (meta["eval_elapsed_sec"])이 있으면 그대로 옮겨 적는다 — 원본을 안 건드리고도
+    구할 수 있는 유일한 계측치라 예외로 둔다.
     """
     out = {h: "" for h in EVAL_PERF_HEADERS}
     if is_legacy:
         for h in EVAL_PERF_HEADERS:
             out[h] = _LEGACY_NA
+        elapsed_sec = (meta or {}).get("eval_elapsed_sec")
+        if isinstance(elapsed_sec, (int, float)):
+            out["소요시간(초)"] = f"{elapsed_sec:.1f}"
         return out
 
     meta_all = meta or {}
@@ -451,6 +473,9 @@ _META_KEEP_KEYS = {
     "gpt_called", "token_usage", "elapsed_ms", "field_elapsed_ms", "field_tokens",
     # 260 발행지가 어느 경로로 확정됐는지(ISBN 접두표/KPIPA/알라딘/행안부/폴백).
     "bundle_source",
+    # 기존 I2M(레거시)의 run_and_export() 호출을 _run_batch()가 바깥에서 감싸 잰
+    # 전체 소요시간(초) — 원본엔 없는 값이라 우리가 직접 만들어 붙인 유일한 계측치.
+    "eval_elapsed_sec",
 }
 
 
@@ -554,6 +579,101 @@ def _checkpoint_dataframe(path: Path) -> pd.DataFrame:
 
 
 # ══════════════════════════════════════════════════════════════
+# 기존 I2M — OpenAI 토큰 사용량 훔쳐보기 (원본 파일은 안 건드림)
+# ══════════════════════════════════════════════════════════════
+#
+# 1215_main.py 전체(5,284줄)를 뒤져보면 OpenAI 클라이언트는 모듈 전역 client/_client
+# 딱 2개뿐이고, 실제 API 호출도 7군데(client.chat.completions.create x4,
+# _client.chat.completions.create x2, _client.responses.create x1)뿐이다. 둘 다
+# 함수 인자 기본값으로 캡처되지 않고 매번 전역 이름을 그대로 참조하므로, 모듈을
+# 불러온 뒤 그 두 이름을 "실제 호출은 그대로 전달하되 usage만 옆에서 기록하는
+# 대리자"로 바꿔치기하면 원본 코드를 한 글자도 안 고치고 토큰을 셀 수 있다.
+# (참고: 3732행에도 client라는 이름이 나오지만 그건 load_publisher_db() 안의
+# 지역변수(gspread 클라이언트)라 서로 안 부딪힌다.)
+
+
+class _LegacyTokenAccumulator:
+    """client/_client 두 대리자가 공유하는 카운터. core/token_tracker.py와 같은
+    패턴(ISBN 처리 전 reset, 처리 후 total)이지만 그건 고도화 전용이라 별도로 둔다."""
+
+    def __init__(self) -> None:
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+
+    def add(self, usage) -> None:
+        if usage is None:
+            return
+        # chat.completions 응답은 prompt_tokens/completion_tokens, responses 응답은
+        # input_tokens/output_tokens를 쓴다 — 한 객체에 둘 다 있을 일은 없다.
+        self.prompt_tokens += getattr(usage, "prompt_tokens", None) or getattr(usage, "input_tokens", 0) or 0
+        self.completion_tokens += (
+            getattr(usage, "completion_tokens", None) or getattr(usage, "output_tokens", 0) or 0
+        )
+
+    def reset(self) -> None:
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+
+    def total(self) -> dict[str, int]:
+        return {
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "total_tokens": self.prompt_tokens + self.completion_tokens,
+        }
+
+
+class _SpyCompletions:
+    def __init__(self, real, acc: _LegacyTokenAccumulator) -> None:
+        self._real = real
+        self._acc = acc
+
+    def create(self, *args, **kwargs):
+        resp = self._real.create(*args, **kwargs)
+        self._acc.add(getattr(resp, "usage", None))
+        return resp
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+class _SpyChat:
+    def __init__(self, real, acc: _LegacyTokenAccumulator) -> None:
+        self._real = real
+        self.completions = _SpyCompletions(real.completions, acc)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+class _SpyResponses:
+    def __init__(self, real, acc: _LegacyTokenAccumulator) -> None:
+        self._real = real
+        self._acc = acc
+
+    def create(self, *args, **kwargs):
+        resp = self._real.create(*args, **kwargs)
+        self._acc.add(getattr(resp, "usage", None))
+        return resp
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+class _SpyOpenAIClient:
+    """실제 OpenAI 클라이언트를 감싸는 대리자. .chat.completions.create와
+    .responses.create만 가로채 usage를 acc에 기록하고, 그 외 속성/메서드는
+    __getattr__로 원본에 그대로 위임한다 — 원본이 뭘 더 쓰든 안전하게 통과된다."""
+
+    def __init__(self, real, acc: _LegacyTokenAccumulator) -> None:
+        self._real = real
+        self.chat = _SpyChat(real.chat, acc)
+        self.responses = _SpyResponses(real.responses, acc)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+# ══════════════════════════════════════════════════════════════
 # 기존 I2M(2025년 코드 원본) 읽기 전용 로딩
 # ══════════════════════════════════════════════════════════════
 
@@ -561,9 +681,17 @@ def _get_legacy_module():
     """legacy_2025_code/1215_main.py(원본)를 읽기 전용으로 1회만 임포트해 세션에 캐시.
     2_2025_I2M.py와 동일한 경로 이원화 규칙(로컬 원본 우선 → 저장소 내 사본 폴백)을 따른다.
     모듈을 import(exec)하면 원본 하단의 Streamlit UI(st.header/st.form 등)가 함께 그려지므로,
-    임시 placeholder에 담았다가 즉시 지운다. 원본 파일은 전혀 수정하지 않는다."""
+    임시 placeholder에 담았다가 즉시 지운다. 원본 파일은 전혀 수정하지 않는다.
+
+    (module, source_label, token_acc) 3개를 반환한다 — token_acc는 module.client/
+    module._client에 심어둔 _SpyOpenAIClient 두 개가 공유하는 토큰 카운터. 호출하는
+    쪽(_run_batch)이 ISBN 처리 전 token_acc.reset(), 처리 후 token_acc.total()로 쓴다."""
     if "eval_legacy_module" in st.session_state:
-        return st.session_state["eval_legacy_module"], st.session_state["eval_legacy_source"]
+        return (
+            st.session_state["eval_legacy_module"],
+            st.session_state["eval_legacy_source"],
+            st.session_state["eval_legacy_token_acc"],
+        )
 
     original_path = (
         Path(__file__).resolve().parents[2] / "통합 이전 코드" / "2025년 코드" / "1215_main.py"
@@ -593,9 +721,18 @@ def _get_legacy_module():
             spec.loader.exec_module(module)
     placeholder.empty()  # 원본 하단 UI(폼/헤더)가 그려졌던 자리를 지운다 — 함수만 취한다
 
+    # client/_client 이름을 대리자로 바꿔치기 — 둘 다 없을 수도 있어(OPENAI_API_KEY
+    # 미설정 등) getattr로 안전하게 확인한다.
+    token_acc = _LegacyTokenAccumulator()
+    if getattr(module, "client", None) is not None:
+        module.client = _SpyOpenAIClient(module.client, token_acc)
+    if getattr(module, "_client", None) is not None:
+        module._client = _SpyOpenAIClient(module._client, token_acc)
+
     st.session_state["eval_legacy_module"] = module
     st.session_state["eval_legacy_source"] = source_label
-    return module, source_label
+    st.session_state["eval_legacy_token_acc"] = token_acc
+    return module, source_label, token_acc
 
 
 # ══════════════════════════════════════════════════════════════
@@ -686,7 +823,7 @@ def _run_batch(
             if not _gpt_guard(i):
                 break
     else:
-        legacy_module, source_label = _get_legacy_module()
+        legacy_module, source_label, legacy_token_acc = _get_legacy_module()
         st.caption(f"실행 소스: {source_label}")
         for i, isbn in enumerate(target_isbns, start=1):
             if isbn in done_map:
@@ -697,6 +834,14 @@ def _run_batch(
             else:
                 status.text(f"{i} / {total} 생성 중... (기존 I2M)")
                 ph = st.empty()
+                # run_and_export() 호출을 바깥에서만 시간을 잰다 — 원본(1215_main.py)은
+                # 한 글자도 안 건드리는 원칙이라 내부에 필드별 계측을 넣을 수 없다.
+                # 그래서 "전체 소요시간"만 이렇게 얻는다(필드별 시간은 원본이 필드를
+                # 함수로 안 나눠놔서 이 방식으로도 얻을 수 없다). 토큰은 client/_client에
+                # 심어둔 _SpyOpenAIClient가 이 ISBN 처리 중 실제 호출된 값을 옆에서
+                # 기록해주므로, 처리 시작 전에 카운터를 비워둔다.
+                legacy_token_acc.reset()
+                _t0 = time.perf_counter()
                 try:
                     with ph.container():
                         _, _, mrk_text, _ = legacy_module.run_and_export(
@@ -708,11 +853,20 @@ def _run_batch(
                     err = ""
                 except Exception as e:
                     mrk_text, err = "", str(e)
+                elapsed_sec = round(time.perf_counter() - _t0, 1)
                 ph.empty()  # 원본 내부의 st.write/warning/expander 디버그 출력을 지운다
                 # 기존 I2M은 run_and_export()가 MRK 문자열만 돌려준다 — 056 후보·확률
-                # 같은 진단값이 애초에 없으므로 meta는 빈 dict다.
-                _append_checkpoint(ckpt_path, isbn, mrk_text, err, {})
-                results.append((isbn, mrk_text, err, {}))
+                # 같은 진단값이 애초에 없으므로 meta는 우리가 바깥에서 잰 값만 담는다.
+                # token_usage/gpt_called는 고도화 경로와 같은 키 이름을 써서
+                # _056_eval_values()의 "GPT호출(1/0)"·"GPT토큰" 로직을 그대로 재사용한다.
+                token_usage = legacy_token_acc.total()
+                legacy_meta = {
+                    "eval_elapsed_sec": elapsed_sec,
+                    "token_usage": token_usage,
+                    "gpt_called": token_usage["total_tokens"] > 0,
+                }
+                _append_checkpoint(ckpt_path, isbn, mrk_text, err, legacy_meta)
+                results.append((isbn, mrk_text, err, legacy_meta))
             progress.progress(i / total, text=f"{i}/{total} 완료")
             # 기존 I2M은 056을 GPT로 만들기 때문에 이 점검이 특히 중요하다 —
             # GPT가 죽으면 056이 전건 비고 일치율이 0%로 나온다.
