@@ -58,5 +58,21 @@ STREAMLIT_PID=$!
 # 만들지만, 혹시 몰라 미리 만들어둔다(/tmp라 권한 문제 없음).
 mkdir -p /tmp/nginx-client-body /tmp/nginx-proxy /tmp/nginx-fastcgi /tmp/nginx-uwsgi /tmp/nginx-scgi
 
+# /app(React)·/api(FastAPI)를 auth_gate.py와 같은 APP_PASSWORD로 잠근다 —
+# 그 게이트는 스트림릿 페이지 코드 안에서만 동작해서 nginx가 새로 여는 이
+# 경로들은 원래 보호를 못 받는다(nginx.conf 참고). APP_PASSWORD가 비어있으면
+# auth_gate.py 자신도 잠금을 비활성화하므로(로컬 개발 편의) 여기도 그에 맞춘다.
+if [ -n "${APP_PASSWORD:-}" ]; then
+  htpasswd -bc /tmp/nginx-htpasswd i2m "$APP_PASSWORD"
+  cat > /tmp/nginx-auth.conf <<'EOF'
+auth_basic "I2M KORMARC";
+auth_basic_user_file /tmp/nginx-htpasswd;
+EOF
+  echo "[start] /app, /api Basic Auth 활성화"
+else
+  : > /tmp/nginx-auth.conf
+  echo "[start] APP_PASSWORD 미설정 — /app, /api 잠금 비활성(로컬 개발 가정)" >&2
+fi
+
 # Space는 7860 포트를 외부에 노출한다 — nginx가 그 창구다.
 exec nginx -c "$(pwd)/nginx.conf" -g 'daemon off;'

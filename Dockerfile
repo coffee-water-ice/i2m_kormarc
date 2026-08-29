@@ -18,8 +18,9 @@ FROM python:3.11-slim
 # 하나(7860)를 받아서 /app(React)·/api(FastAPI)·나머지(스트림릿)로 나눠주는 용도
 # (nginx.conf 참고) — apt로 설치되는 mime.types 등 기본 파일만 그대로 쓰고,
 # 실행 설정 자체는 우리 nginx.conf를 -c로 직접 지정해서 띄운다(start.sh).
+# apache2-utils: htpasswd — /app·/api를 APP_PASSWORD로 잠그는 데 쓴다(start.sh).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git curl nginx \
+    && apt-get install -y --no-install-recommends git curl nginx apache2-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Space는 UID 1000으로 실행된다. root로 만든 파일에는 쓸 수 없으므로
