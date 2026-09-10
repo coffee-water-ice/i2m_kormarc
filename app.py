@@ -484,7 +484,7 @@ def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
         _add(tag_950)
 
         # ── 653 ──────────────────────────────────────────────
-        tag_653, err_653 = _step(
+        tag_653, err_653, flags_653 = _step(
             "653", build_653_field,
             item, isbn,
             openai_client=openai_client,
@@ -496,7 +496,10 @@ def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
             nlk_cert_key=secrets.get("NLK_CERT_KEY", ""),
             nlk_enable=settings.nlk_enable_653,
         )
-        _add(tag_653)  # 실패 사유는 build_653_field 내부에서 이미 [653] 디버그 로그로 남긴다
+        _add(tag_653)  # 실패 사유(err_653)는 아직 meta로 안 올라간다 — [653] 디버그 로그로만
+        # 남는다(기존 동작 그대로 유지). 품질 경고(flags_653)만 meta["field_653_quality_flags"]로
+        # 끌어올려 사서편집 화면에 실시간으로 보여준다(2026-09-10 사용자 요청) — 아래
+        # meta 딕셔너리 구성부 참고.
 
         # ── 056 (KDC 분류기호, 딥러닝 모델) ──────────────────
         # 653 키워드는 v8 스키마(model8~12)에서만 모델 입력에 들어간다. 그 경우
@@ -548,6 +551,11 @@ def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
             "tag_260": tag_260 or "",
             "tag_300": tag_300 or "",
             "tag_653": tag_653 or "",
+            # "tag_"로 시작하지 않는 이름을 일부러 골랐다 — 프론트(types/api.ts)의
+            # ConvertMeta가 `tag_${string}`은 전부 string(원본 조각 참고용)으로 보는
+            # 인덱스 시그니처를 갖고 있어서, 이 값(string[])이 거기 걸리면 타입 충돌이
+            # 난다. field_elapsed_ms/field_tokens와 같은 명명 규칙을 따른다.
+            "field_653_quality_flags": flags_653 or [],
             "tag_056": tag_056 or "",
             "kdc_candidates": diag_056.get("candidates", []),
             "kdc_low_confidence": diag_056.get("low_confidence", False),

@@ -1266,7 +1266,7 @@ def build_653_field(
     kpipa_enable: bool = False,
     nlk_cert_key: str = "",
     nlk_enable: bool = False,
-) -> tuple[str | None, str | None]:
+) -> tuple[str | None, str | None, list[str] | None]:
     """
     653 MRK 문자열을 반환한다.
 
@@ -1280,10 +1280,16 @@ def build_653_field(
         nlk_cert_key/nlk_enable: NLK 부가기호(content_code) 보강(기본 비활성, 원본과 동일).
 
     Returns:
-        (tag_653_mrk, error) — 성공 시 error=None, 실패 시 tag=None.
+        (tag_653_mrk, error, quality_flags) — 성공 시 error=None. quality_flags는
+        _finalize_653이 만드는 품질 경고 목록(예: "AI생성부족"/"과다차단"/
+        "텍스트fallback사용"/"카테고리fallback사용"/"키워드부족") — 예전엔 dbg()
+        로그 한 줄로만 남고 호출부까지 전달되지 않던 것을 끌어올렸다(사용자 확인,
+        2026-09-10 — 사서편집 화면에 실시간으로 보여주기 위함). _finalize_653을
+        아직 안 불렀거나(OPENAI_API_KEY 미설정) 호출 자체가 실패한 경우엔 계산된
+        적이 없으므로 None.
     """
     if not openai_client:
-        return None, "OPENAI_API_KEY가 설정되지 않았습니다."
+        return None, "OPENAI_API_KEY가 설정되지 않았습니다.", None
 
     meta = _build_meta_from_item(item)
 
@@ -1346,7 +1352,7 @@ def build_653_field(
         raw = _call_static_instructions_api(input_text, openai_client, model)
     except Exception as e:
         dbg_err(f"[653] OpenAI Responses API 호출 실패: {e}")
-        return None, f"OpenAI 653 호출 실패: {e}"
+        return None, f"OpenAI 653 호출 실패: {e}", None
 
     forbidden = _build_forbidden_set(title, authors)
     title_compact = _build_forbidden_compact(title, authors)
@@ -1371,6 +1377,6 @@ def build_653_field(
     )
 
     if not subfield_line:
-        return None, "유효한 키워드를 추출하지 못했습니다."
+        return None, "유효한 키워드를 추출하지 못했습니다.", quality["flags"]
 
-    return build_marc_653_line(subfield_line), None
+    return build_marc_653_line(subfield_line), None, quality["flags"]
