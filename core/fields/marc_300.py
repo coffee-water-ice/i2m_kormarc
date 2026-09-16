@@ -19,10 +19,12 @@ NOTE(레이어링 잔재): 원본 구조를 그대로 이관해 알라딘 상세
 크롤링 부분을 옮기는 리팩터링은 별도 작업으로 남겨둔다.
 
 NOTE(삽화 판정 보강): 저자 목록에 '그림' 역할(authorTypeDesc/authorTypeName)이
-있으면 기본적으로 천연색삽화로 판정한다(_has_illustrator_author). 다만 AI가 본문에서
-흑백을 명시하는 문장을 찾아 이미 "삽화"(흑백)로 판정했다면 그 판정을 우선한다
-(_resolve_illustration_label). 041의 _has_translator_in_item()과 동일한
-"구조화된 필드 우선 → 원시 문자열 정규식 폴백" 패턴을 따른다.
+있으면 기본적으로 삽화(흑백/색상불명)로 판정한다(_has_illustrator_author). 다만
+AI가 본문에서 천연색(컬러)임을 확인해 이미 "천연색삽화"로 판정했다면 그 판정을
+우선한다(_resolve_illustration_label). 그림 담당 저자의 존재는 삽화 자체의 수록
+여부에 대한 근거일 뿐 색상에 대한 근거가 아니므로, 색상 관련 AI 신호가 없을 때는
+보수적으로 삽화(흑백/색상불명)를 기본값으로 둔다. 041의 _has_translator_in_item()과
+동일한 "구조화된 필드 우선 → 원시 문자열 정규식 폴백" 패턴을 따른다.
 """
 
 from __future__ import annotations
@@ -71,8 +73,8 @@ def _resolve_illustration_label(ai_items: list[str], has_illustrator_role: bool)
     """
     AI가 판정한 항목 목록에 '그림' 역할 저자 신호를 반영해 최종 목록을 만든다.
 
-    저자 역할에 그림 작가가 있으면 기본적으로 천연색삽화로 본다 — 다만 AI가
-    본문(제목/책소개/목차)에서 흑백을 명시하는 문장을 찾아 이미 "삽화"(흑백)로
+    저자 역할에 그림 작가가 있으면 기본적으로 삽화(흑백/색상불명)로 본다 — 다만
+    AI가 본문(제목/책소개/목차)에서 천연색(컬러)임을 확인해 이미 "천연색삽화"로
     판정했다면 그 판정을 우선한다. 사진/도표/지도/악보 등 AI가 함께 감지한
     다른 항목은 그대로 유지한다.
     """
@@ -80,7 +82,7 @@ def _resolve_illustration_label(ai_items: list[str], has_illustrator_role: bool)
         return list(ai_items)
 
     others = [i for i in ai_items if i not in ("삽화", "천연색삽화")]
-    chosen = "삽화" if "삽화" in ai_items else "천연색삽화"
+    chosen = "천연색삽화" if "천연색삽화" in ai_items else "삽화"
     return [chosen] + others
 
 
@@ -356,8 +358,7 @@ def _parse_aladin_physical_info(
     if has_illustrator_role and resolved_items != ai_items:
         dbg(
             "[300] 그림 역할 저자 감지 →",
-            "AI가 흑백 신호를 명시해 삽화(흑백) 유지" if "삽화" in ai_items
-            else "천연색삽화로 보정",
+            f"삽화 판정 보정: {ai_items or '(없음)'} → {resolved_items[0]}",
         )
         illus_detail = [
             {"label": resolved_items[0], "keyword": "(저자 역할: 그림)", "source": "저자정보"}
