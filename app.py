@@ -189,6 +189,11 @@ class ConvertRequest(BaseModel):
         max_length=17,
         json_schema_extra={"example": "9788937462849"},
     )
+    # 평가시스템 전용 — 기본값 False라 사서의 평소 단건/배치 변환에는 영향이 없다.
+    # True면 _run_conversion()이 결과 .mrc/.mrk를 디스크에 저장하고 그 시간을
+    # meta.field_elapsed_ms["file_save"]에 남긴다(_save_eval_marc_files 참고) —
+    # 기존 I2M(legacy save_marc_files 포함 계측)과 계측 범위를 맞추기 위함이다.
+    save_files: bool = False
 
 
 class ConvertResult(BaseModel):
@@ -345,6 +350,25 @@ def _kpipa_payload_for_056(isbn: str, secrets: dict, settings: Settings) -> dict
     except Exception as e:
         dbg_err("[056] KPIPA 조회 실패:", e)
         return empty
+
+
+_EVAL_OUTPUT_DIR = os.environ.get("EVAL_OUTPUT_DIR", "./eval_output")
+
+
+def _save_eval_marc_files(isbn: str, marc_bytes: bytes, mrk_text: str) -> None:
+    """
+    req.save_files=True일 때만 호출된다(평가시스템 전용, 평소 변환엔 영향 없음).
+    legacy_2025_code/1215_main.py:5136의 save_marc_files()와 동일하게 .mrc(바이너리)·
+    .mrk(텍스트) 두 파일을 디스크에 쓴다 — 기존 I2M 쪽 소요시간(eval_elapsed_sec)이
+    "레코드 조립 + 파일 저장"까지 포함해서 재는데, 고도화 쪽은 평소 이 단계 자체가
+    없어 계측 범위가 안 맞았다. 평가 시에만 이 단계를 넣어 두 시스템을 같은 조건으로
+    비교하기 위한 용도다.
+    """
+    os.makedirs(_EVAL_OUTPUT_DIR, exist_ok=True)
+    with open(os.path.join(_EVAL_OUTPUT_DIR, f"{isbn}.mrc"), "wb") as f:
+        f.write(marc_bytes)
+    with open(os.path.join(_EVAL_OUTPUT_DIR, f"{isbn}.mrk"), "w", encoding="utf-8") as f:
+        f.write(mrk_text)
 
 
 def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
@@ -533,6 +557,9 @@ def _run_conversion(req: ConvertRequest, secrets: dict) -> ConvertResult:
 
         mrk_text = "\n".join(filter(None, all_tags))
         marc_bytes = builder.rec.as_marc()
+
+        if req.save_files:
+            _step("file_save", _save_eval_marc_files, isbn, marc_bytes, mrk_text)
 
         meta = {
             "isbn": isbn,

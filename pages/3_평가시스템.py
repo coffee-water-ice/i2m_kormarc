@@ -177,6 +177,9 @@ FIELD_STEP_LABELS: dict[str, str] = {
     "300": "300",
     "653": "653",
     "056": "056",
+    # 필드가 아니라 평가 전용 계측 단계 — app.py의 save_files:true(고도화)와
+    # 아래 _make_save_marc_files_spy(기존 I2M) 둘 다 이 이름으로 값을 채운다.
+    "file_save": "파일저장",
 }
 
 EVAL_PERF_HEADERS: list[str] = ["소요시간(초)"] + [
@@ -348,6 +351,13 @@ def _perf_eval_values(meta: dict | None, is_legacy: bool) -> dict[str, str]:
         elapsed_sec = (meta or {}).get("eval_elapsed_sec")
         if isinstance(elapsed_sec, (int, float)):
             out["소요시간(초)"] = f"{elapsed_sec:.1f}"
+        # "파일저장"만 056의 GPT호출/GPT토큰과 같은 예외다 — save_marc_files()를
+        # 감싼 스파이(_make_save_marc_files_spy)가 실측한 값이 있으면 "미생성"
+        # 대신 그 값을 적는다. 토큰은 파일 저장 자체가 GPT를 안 쓰므로 0으로 고정.
+        file_save_ms = (meta or {}).get("file_save_ms")
+        if isinstance(file_save_ms, (int, float)):
+            out["파일저장 소요(ms)"] = str(file_save_ms)
+            out["파일저장 토큰"] = "0"
         return out
 
     meta_all = meta or {}
@@ -674,6 +684,46 @@ class _SpyOpenAIClient:
 
 
 # ══════════════════════════════════════════════════════════════
+# 기존 I2M — 파일 저장(save_marc_files) 소요시간 훔쳐보기 (원본 파일은 안 건드림)
+# ══════════════════════════════════════════════════════════════
+#
+# 고도화 I2M은 평가 시에만 save_files:true로 .mrc/.mrk 저장 단계를 추가해 시간을
+# 재는데(app.py의 _save_eval_marc_files), 기존 I2M은 run_and_export()가 원래부터
+# 항상 save_marc_files()를 부른다 — 그 저장 시간이 얼마인지 지금까지는 별도
+# 벤치마크(추정치)로만 알고 있었다. _SpyOpenAIClient와 같은 방식으로 모듈 전역
+# 함수 이름 하나(save_marc_files)만 "실제 저장은 그대로 하되 걸린 시간만 옆에서
+# 기록하는 대리자"로 바꿔치기하면, 원본을 한 글자도 안 고치고 실측할 수 있다.
+
+
+class _LegacyFileSaveAccumulator:
+    """save_marc_files() 스파이가 기록하는 소요시간(ms) 누적기 — _LegacyTokenAccumulator와
+    같은 패턴(ISBN 처리 전 reset, 처리 후 total_ms 확인)."""
+
+    def __init__(self) -> None:
+        self.total_ms = 0.0
+
+    def add(self, ms: float) -> None:
+        self.total_ms += ms
+
+    def reset(self) -> None:
+        self.total_ms = 0.0
+
+
+def _make_save_marc_files_spy(original, acc: _LegacyFileSaveAccumulator):
+    """save_marc_files(record, save_dir, base_filename)과 완전히 같은 시그니처로
+    호출을 그대로 위임하되, 걸린 시간만 acc에 더한다. run_and_export()는 이 함수를
+    한 번만 부르지만, 혹시 모를 재시도에도 안전하게 누적(add)한다."""
+
+    def _spy(record, save_dir, base_filename):
+        t0 = time.perf_counter()
+        result = original(record, save_dir, base_filename)
+        acc.add((time.perf_counter() - t0) * 1000)
+        return result
+
+    return _spy
+
+
+# ══════════════════════════════════════════════════════════════
 # 기존 I2M(2025년 코드 원본) 읽기 전용 로딩
 # ══════════════════════════════════════════════════════════════
 
@@ -683,14 +733,17 @@ def _get_legacy_module():
     모듈을 import(exec)하면 원본 하단의 Streamlit UI(st.header/st.form 등)가 함께 그려지므로,
     임시 placeholder에 담았다가 즉시 지운다. 원본 파일은 전혀 수정하지 않는다.
 
-    (module, source_label, token_acc) 3개를 반환한다 — token_acc는 module.client/
-    module._client에 심어둔 _SpyOpenAIClient 두 개가 공유하는 토큰 카운터. 호출하는
-    쪽(_run_batch)이 ISBN 처리 전 token_acc.reset(), 처리 후 token_acc.total()로 쓴다."""
+    (module, source_label, token_acc, file_save_acc) 4개를 반환한다 — token_acc는
+    module.client/module._client에 심어둔 _SpyOpenAIClient 두 개가 공유하는 토큰
+    카운터, file_save_acc는 module.save_marc_files에 심어둔 스파이가 기록하는
+    저장시간 누적기다. 호출하는 쪽(_run_batch)이 ISBN 처리 전 각각 reset(), 처리
+    후 token_acc.total()/file_save_acc.total_ms로 쓴다."""
     if "eval_legacy_module" in st.session_state:
         return (
             st.session_state["eval_legacy_module"],
             st.session_state["eval_legacy_source"],
             st.session_state["eval_legacy_token_acc"],
+            st.session_state["eval_legacy_file_save_acc"],
         )
 
     original_path = (
@@ -729,10 +782,17 @@ def _get_legacy_module():
     if getattr(module, "_client", None) is not None:
         module._client = _SpyOpenAIClient(module._client, token_acc)
 
+    # save_marc_files도 같은 방식으로 바꿔치기 — 원본에 없을 리는 없지만(이 함수가
+    # run_and_export()의 필수 부분) 혹시 모를 원본 개편에 안전하게 getattr로 확인한다.
+    file_save_acc = _LegacyFileSaveAccumulator()
+    if getattr(module, "save_marc_files", None) is not None:
+        module.save_marc_files = _make_save_marc_files_spy(module.save_marc_files, file_save_acc)
+
     st.session_state["eval_legacy_module"] = module
     st.session_state["eval_legacy_source"] = source_label
     st.session_state["eval_legacy_token_acc"] = token_acc
-    return module, source_label, token_acc
+    st.session_state["eval_legacy_file_save_acc"] = file_save_acc
+    return module, source_label, token_acc, file_save_acc
 
 
 # ══════════════════════════════════════════════════════════════
@@ -823,7 +883,7 @@ def _run_batch(
             if not _gpt_guard(i):
                 break
     else:
-        legacy_module, source_label, legacy_token_acc = _get_legacy_module()
+        legacy_module, source_label, legacy_token_acc, legacy_file_save_acc = _get_legacy_module()
         st.caption(f"실행 소스: {source_label}")
         for i, isbn in enumerate(target_isbns, start=1):
             if isbn in done_map:
@@ -839,8 +899,10 @@ def _run_batch(
                 # 그래서 "전체 소요시간"만 이렇게 얻는다(필드별 시간은 원본이 필드를
                 # 함수로 안 나눠놔서 이 방식으로도 얻을 수 없다). 토큰은 client/_client에
                 # 심어둔 _SpyOpenAIClient가 이 ISBN 처리 중 실제 호출된 값을 옆에서
-                # 기록해주므로, 처리 시작 전에 카운터를 비워둔다.
+                # 기록해주므로, 처리 시작 전에 카운터를 비워둔다. save_marc_files에
+                # 심어둔 스파이(파일 저장 소요시간)도 같은 이유로 같이 비운다.
                 legacy_token_acc.reset()
+                legacy_file_save_acc.reset()
                 _t0 = time.perf_counter()
                 try:
                     with ph.container():
@@ -864,6 +926,7 @@ def _run_batch(
                     "eval_elapsed_sec": elapsed_sec,
                     "token_usage": token_usage,
                     "gpt_called": token_usage["total_tokens"] > 0,
+                    "file_save_ms": round(legacy_file_save_acc.total_ms, 3),
                 }
                 _append_checkpoint(ckpt_path, isbn, mrk_text, err, legacy_meta)
                 results.append((isbn, mrk_text, err, legacy_meta))
