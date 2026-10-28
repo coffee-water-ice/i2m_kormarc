@@ -1193,7 +1193,7 @@ def _finalize_653(
     if backup_used:
         flags.append("텍스트fallback사용")
     if category_fallback_used:
-        flags.append("카테고리fallback사용")
+        flags.append("카테고리 활용 보안")
     if final_count < min_keywords:
         flags.append("키워드부족")
 
@@ -1282,7 +1282,7 @@ def build_653_field(
     Returns:
         (tag_653_mrk, error, quality_flags) — 성공 시 error=None. quality_flags는
         _finalize_653이 만드는 품질 경고 목록(예: "AI생성부족"/"과다차단"/
-        "텍스트fallback사용"/"카테고리fallback사용"/"키워드부족") — 예전엔 dbg()
+        "텍스트fallback사용"/"카테고리 활용 보안"/"키워드부족") — 예전엔 dbg()
         로그 한 줄로만 남고 호출부까지 전달되지 않던 것을 끌어올렸다(사용자 확인,
         2026-09-10 — 사서편집 화면에 실시간으로 보여주기 위함). _finalize_653을
         아직 안 불렀거나(OPENAI_API_KEY 미설정) 호출 자체가 실패한 경우엔 계산된
